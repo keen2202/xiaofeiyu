@@ -136,8 +136,36 @@ export class DiaryModule {
   }
 
   async _readEvents(snapshot) {
-    const events = await this.journal.readEvents({ epoch: snapshot.historyEpoch, upToSeq: snapshot.eventSeq });
-    return events;
+    const current = await this.journal.readEvents({
+      epoch: snapshot.historyEpoch,
+      upToSeq: snapshot.eventSeq
+    });
+    const parent = snapshot.recovery?.parent;
+    if (
+      !parent ||
+      parent.sourceHistoryEpoch === snapshot.historyEpoch ||
+      !Number.isSafeInteger(parent.cutEventSeq)
+    ) {
+      return current;
+    }
+    // A recovered branch must keep the facts that were archived before the
+    // recovery cut. Events still in journalPending at the cut were re-sequenced
+    // into the current branch, so reading the parent up to cutEventSeq would
+    // otherwise hit a false sequence gap. Cap the parent read at its archived
+    // watermark and let current-branch pending events carry the rest.
+    const parentArchivedEnd = Object.values(snapshot.journalSegments || {})
+      .filter((segment) => segment.historyEpoch === parent.sourceHistoryEpoch)
+      .reduce((max, segment) => Math.max(max, Number(segment.endSeq) || 0), 0);
+    const parentReadEnd = Math.min(parent.cutEventSeq, parentArchivedEnd);
+    if (parentReadEnd <= 0) return current;
+    const parentEvents = await this.journal.readEvents({
+      epoch: parent.sourceHistoryEpoch,
+      upToSeq: parentReadEnd
+    });
+    const merged = new Map();
+    for (const event of parentEvents) merged.set(event.eventId, event);
+    for (const event of current) merged.set(event.eventId, event);
+    return [...merged.values()];
   }
 
   _scopeEvents(events, scope, snapshot) {

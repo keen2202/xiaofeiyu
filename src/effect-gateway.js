@@ -576,6 +576,11 @@ export class EffectGateway {
       if (['confirmed', 'failed', 'not_sent', 'cancelled'].includes(op.status)) {
         return { terminal: true, operation: deepClone(op) };
       }
+      if (op.recoveryAmbiguous) {
+        throw new AppError('RECOVERY_GAP', 'operation existed at a recovery cut and needs evidence before dispatch', {
+          details: { operationId, status: op.status }
+        });
+      }
       if (op.status === 'dispatching' || op.status === 'unknown') {
         throw new AppError('OPERATION_UNKNOWN', 'operation was already dispatched; it cannot be sent again', {
           details: { operationId, status: op.status }
@@ -876,6 +881,7 @@ export class EffectGateway {
         throw new AppError('OPERATION_UNKNOWN', 'only unknown operations can be resolved');
       }
       current.status = decision;
+      current.recoveryAmbiguous = false;
       current.resolvedAt = nowIso(this.now);
       current.resolution = {
         decision,
@@ -955,6 +961,147 @@ export class EffectGateway {
     });
   }
 
+  /**
+   * Settle an operation that existed at a recovery cut. This is only called
+   * from RecoveryService inside the same transaction that records the
+   * evidence; it deliberately accepts reserved/dispatching/unknown states
+   * because the restore point may predate the actual external effect.
+   */
+  _resolveRecoveredInTransaction(tx, {
+    operationId,
+    decision,
+    receipt = null,
+    note = '',
+    principalId,
+    evidenceId
+  } = {}) {
+    if (!['confirmed', 'not_sent'].includes(decision)) {
+      throw new AppError('RECOVERY_GAP', 'operation repair decision must be confirmed or not_sent');
+    }
+    const current = tx.state.operations?.[operationId];
+    if (!current) return { status: 'operation_missing', operation: null };
+    if (current.status === decision) {
+      current.recoveryAmbiguous = false;
+      for (const exposure of Object.values(tx.state.recovery?.unknownExposures || {})) {
+        if (exposure.status !== 'active' || !(exposure.operationRefs || []).includes(current.id)) continue;
+        exposure.status = decision === 'confirmed' ? 'confirmed' : 'not_sent';
+        exposure.resolvedAt = current.resolvedAt || nowIso(this.now);
+        exposure.evidenceRefs = [...new Set([...(exposure.evidenceRefs || []), evidenceId].filter(Boolean))];
+        exposure.revision = (exposure.revision || 0) + 1;
+      }
+      return { status: 'already_resolved', operation: deepClone(current), deduplicated: true };
+    }
+    if (!['unknown', 'reserved', 'dispatching'].includes(current.status)) {
+      throw new AppError('RECOVERY_GAP', 'operation is already settled with a conflicting result', {
+        details: { operationId, status: current.status }
+      });
+    }
+    if (decision === 'confirmed') {
+      if (!receipt) throw new AppError('RECOVERY_GAP', 'confirmed operation repair requires a receipt');
+      assertReceipt(receipt, {
+        platform: current.accountRef?.platform || null,
+        accountId: current.accountRef?.accountId || null,
+        action: current.receiptAction || current.action
+      });
+      if (current.namespace === 'external') {
+        if (!receipt.externalId || !receipt.url) {
+          throw new AppError('RECOVERY_GAP', 'external publish repair requires bvid/url');
+        }
+        if (!['publisher_receipt', 'platform_readback'].includes(receipt.verification)) {
+          throw new AppError('RECOVERY_GAP', 'external publish repair requires publisher/platform verification');
+        }
+      }
+    } else if (!note && !receipt) {
+      throw new AppError('RECOVERY_GAP', 'not_sent repair requires verified evidence or a note');
+    }
+    const priorStatus = current.status;
+    current.status = decision;
+    current.recoveryAmbiguous = false;
+    current.resolvedAt = nowIso(this.now);
+    current.finishedAt = current.resolvedAt;
+    current.resolution = {
+      decision,
+      note: truncateText(note || '', 1000),
+      receipt: receipt ? deepClone(receipt) : null,
+      resolvedBy: principalId,
+      evidenceId,
+      recoveredFromEvidence: true,
+      verification: decision === 'confirmed' ? receipt.verification : 'recovery_evidence'
+    };
+    current.receipt = receipt ? deepClone(receipt) : current.receipt;
+    if (decision === 'confirmed') {
+      current.confirmedAt = current.resolvedAt;
+      current.resultSummary = {
+        externalId: receipt.externalId,
+        url: receipt.url || null,
+        verification: receipt.verification
+      };
+      current.error = null;
+    } else {
+      current.error = { code: 'OPERATION_NOT_SENT', message: 'verified not sent by recovery evidence', retryable: false };
+    }
+    if (priorStatus === 'unknown') this._resolveBudget(tx, current, decision);
+    else this._settleBudget(tx, current, decision);
+    for (const key of current.businessKeys || [current.businessKey]) {
+      const businessKey = tx.state.businessKeys[key];
+      if (!businessKey) continue;
+      businessKey.status = decision;
+      businessKey.lastOperationId = current.id;
+      businessKey.updatedAt = nowIso(this.now);
+      if (decision === 'confirmed') {
+        businessKey.confirmedAt = current.resolvedAt;
+        businessKey.receipt = current.resultSummary;
+      } else {
+        businessKey.settledAt = current.resolvedAt;
+        businessKey.error = current.error;
+      }
+    }
+    for (const taskId of current.taskIds || []) {
+      const task = tx.state.tasks[taskId];
+      if (!task) continue;
+      this.taskManager.settleOperation(tx, current);
+      const noPending = (task.pendingOperationIds || []).length === 0;
+      const activeHolds = (task.holds || []).some((hold) => hold.status !== 'released');
+      if (!noPending || activeHolds) continue;
+      if (decision === 'confirmed' && ['running', 'unknown'].includes(task.status)) {
+        this.taskManager.transition(tx, task, 'succeeded', {
+          verified: true,
+          actor: principalId,
+          reason: 'recovery evidence confirmed operation'
+        });
+      } else if (decision === 'not_sent' && ['running', 'unknown'].includes(task.status)) {
+        this.taskManager.transition(tx, task, 'failed', {
+          verified: true,
+          actor: principalId,
+          reason: 'recovery evidence proved operation not sent'
+        });
+      }
+    }
+    for (const exposure of Object.values(tx.state.recovery?.unknownExposures || {})) {
+      if (exposure.status !== 'active' || !(exposure.operationRefs || []).includes(current.id)) continue;
+      exposure.status = decision === 'confirmed' ? 'confirmed' : 'not_sent';
+      exposure.resolvedAt = current.resolvedAt;
+      exposure.evidenceRefs = [...new Set([...(exposure.evidenceRefs || []), evidenceId].filter(Boolean))];
+      exposure.revision = (exposure.revision || 0) + 1;
+    }
+    tx.appendEvent({
+      type: decision === 'confirmed' ? 'operation.confirmed' : 'operation.not_sent',
+      actor: principalId,
+      taskId: current.taskIds?.[0] || null,
+      accountRef: current.accountRef,
+      payload: {
+        operationId: current.id,
+        action: current.action,
+        businessKey: current.businessKey,
+        receipt: current.resultSummary || null,
+        note: truncateText(note || '', 500),
+        recoveryEvidenceId: evidenceId,
+        recovered: true
+      }
+    });
+    return { status: 'repaired', operation: deepClone(current), deduplicated: false };
+  }
+
   assertLocalDispatchInTransaction(tx, data = {}) {
     this._assertConfig(tx);
     this._assertMigration(tx);
@@ -975,9 +1122,17 @@ export class EffectGateway {
    */
   async recoverOrphanedOperations() {
     return this.store.transaction(async (draft, tx) => {
+      // A recovered copy cannot apply the normal restart rule to operations
+      // that existed at the cut: a reserved operation with no dispatchAt may
+      // still have executed on the lost writer. Only evidence-based reconcile
+      // may settle it, and only after the scope is authorized.
+      if (['readonly', 'reconciling', 'restricted', 'blocked'].includes(draft.recovery?.phase)) {
+        return { recovered: [], skipped: 'recovery_phase' };
+      }
       const recovered = [];
       for (const op of Object.values(draft.operations || {})) {
         if (!['reserved', 'dispatching'].includes(op.status)) continue;
+        if (op.recoveryAmbiguous) continue;
         const alive = op.ownerPid && isProcessAlive(op.ownerPid);
         let sameOwner = false;
         let startUnknown = false;

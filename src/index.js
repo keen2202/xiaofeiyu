@@ -22,7 +22,7 @@ import { PublisherModule } from './modules/publisher.js';
 import { CommandService } from './command-service.js';
 import { Coordinator } from './coordinator.js';
 import { LocalExecutionBackend } from './adapters/execution/local.js';
-import { BackupPolicyService, BackupService, RecoveryService } from './backup-recovery.js';
+import { BackupPolicyService, BackupService, BackupScheduler, RecoveryService } from './backup-recovery.js';
 import { MigrationService } from './migration.js';
 import { DshImChannelAdapter, ImBridge } from './adapters/channels/dsh-im.js';
 import { ensureDir, randomId } from './utils.js';
@@ -126,6 +126,13 @@ export async function createRuntime(options = {}) {
     now,
     hooks: hooks.backup,
     logger
+  });
+  const backupScheduler = new BackupScheduler({
+    backupService,
+    policyService,
+    now,
+    logger,
+    tickMs: hooks.backup?.schedulerTickMs || 60000
   });
 
   const credentials = new CredentialService({ file: paths.credentialsFile, env, store, now });
@@ -347,6 +354,7 @@ export async function createRuntime(options = {}) {
     humanProof,
     effectGateway,
     taskManager,
+    restoreRecorder: (info) => backupService.noteRestoreTest(info),
     now,
     hooks: hooks.recovery,
     logger
@@ -410,6 +418,7 @@ export async function createRuntime(options = {}) {
     imAdapter,
     imBridge,
     backupService,
+    backupScheduler,
     policyService,
     recovery,
     migration,
@@ -425,6 +434,12 @@ export async function createRuntime(options = {}) {
     async start() {
       const started = await coordinator.start();
       let im = null;
+      let backup = null;
+      try {
+        backup = await backupScheduler.start();
+      } catch (error) {
+        backup = { started: false, error: { code: error.code, message: error.message } };
+      }
       if (configService.get().im.enabled && imHost) {
         try {
           im = await imBridge.start();
@@ -432,9 +447,10 @@ export async function createRuntime(options = {}) {
           im = { started: false, error: { code: error.code, message: error.message } };
         }
       }
-      return { ...started, im };
+      return { ...started, im, backup };
     },
     async stop() {
+      const backup = await backupScheduler.stop().catch((error) => ({ stopped: false, error: error.message }));
       const coordinatorResult = await coordinator.stop();
       let im = null;
       try {
@@ -446,9 +462,10 @@ export async function createRuntime(options = {}) {
       let execution = null;
       if (backend) execution = await backend.close();
       await store.close();
-      return { coordinator: coordinatorResult, im, execution };
+      return { backup, coordinator: coordinatorResult, im, execution };
     },
     async close() {
+      await backupScheduler.stop().catch(() => {});
       await coordinator.stop().catch(() => {});
       if (executionBackend) await executionBackend.close().catch(() => {});
       try {
@@ -474,6 +491,12 @@ export async function createRuntime(options = {}) {
     } catch (error) {
       protection = { status: 'invalid', reason: error.code || 'BACKUP_INVALID' };
     }
+    const scheduler = await backupScheduler.status().catch((error) => ({
+      configured: false,
+      scheduleEnabled: false,
+      started: false,
+      lastError: { code: error.code || 'BACKUP_INVALID', message: error.message }
+    }));
     return {
       ...status,
       backup: {
@@ -481,7 +504,8 @@ export async function createRuntime(options = {}) {
         reason: protection.reason || null,
         ageMs: protection.ageMs ?? null,
         cutAt: protection.cutAt || null,
-        mediaCoverage: protection.mediaCoverage || null
+        mediaCoverage: protection.mediaCoverage || null,
+        scheduler
       }
     };
   };

@@ -238,6 +238,13 @@ async function listBackupFiles(root, prefix = '') {
   return files;
 }
 
+async function clearRestoreTarget(targetDir) {
+  const entries = await fsp.readdir(targetDir).catch(() => []);
+  for (const entry of entries) {
+    await fsp.rm(path.join(targetDir, entry), { recursive: true, force: true });
+  }
+}
+
 export async function verifyBackupDirectory(dir, { now = () => new Date() } = {}) {
   const manifestFile = path.join(dir, 'manifest.json');
   if (!(await pathExists(manifestFile))) throw new AppError('BACKUP_INVALID', 'backup manifest is missing');
@@ -325,6 +332,24 @@ export class BackupService {
     this.now = now;
     this.hooks = hooks;
     this.logger = logger;
+    this._indexLock = null;
+  }
+
+  async _withIndexLock(fn) {
+    const previous = this._indexLock || Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const chained = previous.then(() => gate);
+    this._indexLock = chained;
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this._indexLock === chained) this._indexLock = null;
+    }
   }
 
   async _policy({ required = true } = {}) {
@@ -390,16 +415,53 @@ export class BackupService {
   }
 
   async create({ kind = 'ledger', requestId }, humanContext) {
+    return this._create({ kind, requestId, humanContext, scheduled: false });
+  }
+
+  /**
+   * Internal scheduler entry. It is deliberately not exposed by
+   * CommandService/CLI: only a policy explicitly enabled by the owner can cause
+   * an automatic recovery point, and that policy is the human authorization.
+   */
+  async createScheduled({ kind = 'ledger', requestId } = {}) {
+    return this._create({
+      kind,
+      requestId,
+      humanContext: {
+        principal: {
+          id: 'system:backup-scheduler',
+          kind: 'service',
+          role: 'system',
+          scopes: []
+        }
+      },
+      scheduled: true
+    });
+  }
+
+  async _create({ kind = 'ledger', requestId, humanContext = null, scheduled = false }) {
     if (!BACKUP_KINDS.includes(kind)) throw new AppError('CONFIG_INVALID', 'backup kind must be ledger or full');
     if (typeof requestId !== 'string' || requestId === '') throw new AppError('CONFIG_INVALID', 'requestId is required');
     const policy = await this._policy();
-    await this._requireHuman(humanContext, { action: 'backup.create', kind, requestId });
+    if (scheduled !== true) {
+      await this._requireHuman(humanContext, { action: 'backup.create', kind, requestId });
+    } else if (policy.scheduleEnabled !== true) {
+      throw new AppError('BACKUP_UNPROTECTED', 'scheduled backup requires an explicitly enabled policy');
+    }
+    const actor = scheduled ? 'system:backup-scheduler' : humanContext.principal.id;
     await this._assertGateForBackup();
     const index = await this._readIndex(policy);
+    let effectiveRequestId = requestId;
     const existing = Object.values(index.backups).find((entry) => entry.requestId === requestId);
     if (existing) {
       if (existing.kind !== kind) throw new AppError('IDEMPOTENCY_CONFLICT', 'requestId was used for another backup kind');
-      return { ...existing, deduplicated: true };
+      if (existing.status === 'verified' || scheduled !== true) {
+        return { ...existing, deduplicated: true };
+      }
+      // A scheduled point can be invalidated by daily verify. Reusing the same
+      // deterministic requestId would return that invalid entry forever, so the
+      // scheduler gets a fresh attempt id instead.
+      effectiveRequestId = `${requestId}:retry:${randomId('r').split('_').at(-1)}`;
     }
     const backupId = `backup_${randomId('b').split('_').at(-1)}`;
     const startedAt = nowIso(this.now);
@@ -420,7 +482,7 @@ export class BackupService {
       draft.checkpointFence = fence;
       draft.backups[backupId] = {
         backupId,
-        requestId,
+        requestId: effectiveRequestId,
         kind,
         status: 'capturing',
         cutAt,
@@ -429,7 +491,7 @@ export class BackupService {
       };
       tx.appendEvent({
         type: 'backup.capture.started',
-        actor: humanContext.principal.id,
+        actor,
         payload: { backupId, kind, cutAt }
       });
       return {
@@ -591,9 +653,9 @@ export class BackupService {
       await ensureDir(root);
       await fsp.rename(tmpDir, finalDir);
       const verified = await verifyBackupDirectory(finalDir, { now: this.now });
-      index.backups[backupId] = {
+      const indexEntry = {
         backupId,
-        requestId,
+        requestId: effectiveRequestId,
         kind,
         status: 'verified',
         createdAt: startedAt,
@@ -614,7 +676,12 @@ export class BackupService {
         restoreTestedAt: null,
         pinned: false
       };
-      await this._writeIndex(policy, index);
+      const savedEntry = await this._withIndexLock(async () => {
+        const latestIndex = await this._readIndex(policy);
+        latestIndex.backups[backupId] = indexEntry;
+        await this._writeIndex(policy, latestIndex);
+        return latestIndex.backups[backupId];
+      });
       await this.store.transaction(async (draft) => {
         draft.backups[backupId] = {
           ...(draft.backups[backupId] || {}),
@@ -623,7 +690,7 @@ export class BackupService {
           mediaCoverage: manifest.mediaCoverage
         };
       });
-      return { ...index.backups[backupId], deduplicated: false, verify: verified };
+      return { ...savedEntry, deduplicated: false, verify: verified };
     } catch (error) {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
       await this.store.transaction(async (draft) => {
@@ -635,14 +702,16 @@ export class BackupService {
         };
       }).catch(() => {});
       try {
-        const failedIndex = await this._readIndex(policy);
-        failedIndex.lastError = {
-          backupId,
-          at: nowIso(this.now),
-          code: error.code || 'BACKUP_INVALID',
-          message: error.message
-        };
-        await this._writeIndex(policy, failedIndex);
+        await this._withIndexLock(async () => {
+          const failedIndex = await this._readIndex(policy);
+          failedIndex.lastError = {
+            backupId,
+            at: nowIso(this.now),
+            code: error.code || 'BACKUP_INVALID',
+            message: error.message
+          };
+          await this._writeIndex(policy, failedIndex);
+        });
       } catch {
         // Keep the original error.
       }
@@ -680,23 +749,162 @@ export class BackupService {
   async verify(backupId) {
     const policy = await this._policy();
     const index = await this._readIndex(policy);
-    const entry = index.backups[backupId];
-    if (!entry) throw new AppError('BACKUP_INVALID', 'backup not found');
+    if (!index.backups[backupId]) throw new AppError('BACKUP_INVALID', 'backup not found');
     const dir = path.join(policy.destinationRoot, 'backups', backupId);
     try {
       const result = await verifyBackupDirectory(dir, { now: this.now });
-      entry.status = 'verified';
-      entry.verifiedAt = nowIso(this.now);
-      entry.mediaCoverage = result.manifest.mediaCoverage;
-      index.lastError = null;
-      await this._writeIndex(policy, index);
+      const entry = await this._withIndexLock(async () => {
+        const latestIndex = await this._readIndex(policy);
+        const current = latestIndex.backups[backupId];
+        if (!current) throw new AppError('BACKUP_INVALID', 'backup disappeared during verify');
+        current.status = 'verified';
+        current.verifiedAt = nowIso(this.now);
+        current.mediaCoverage = result.manifest.mediaCoverage;
+        latestIndex.lastError = null;
+        await this._writeIndex(policy, latestIndex);
+        return current;
+      });
       return { ...entry, ...result, verified: true };
     } catch (error) {
-      entry.status = 'invalid';
-      index.lastError = { backupId, at: nowIso(this.now), code: error.code, message: error.message };
-      await this._writeIndex(policy, index);
+      const entry = await this._withIndexLock(async () => {
+        const latestIndex = await this._readIndex(policy);
+        const current = latestIndex.backups[backupId];
+        if (!current) return { backupId, status: 'invalid' };
+        current.status = 'invalid';
+        latestIndex.lastError = { backupId, at: nowIso(this.now), code: error.code, message: error.message };
+        await this._writeIndex(policy, latestIndex);
+        return current;
+      });
       return { ...entry, verified: false, error: { code: error.code, message: error.message } };
     }
+  }
+
+  /**
+   * Verify at most one latest ledger and one latest full point per UTC day.
+   * The check is persisted in the destination index so a restart does not
+   * hammer the same corrupted point every tick.
+   */
+  async dailyVerify() {
+    const policy = await this._policy();
+    const today = nowIso(this.now).slice(0, 10);
+    let index = await this._readIndex(policy);
+    if (index.lastDailyVerifyDate === today) {
+      return { date: today, checked: [], skipped: true, reason: 'already_verified_today' };
+    }
+    const verified = Object.values(index.backups)
+      .filter((entry) => entry.status === 'verified')
+      .sort((a, b) => String(b.cutAt).localeCompare(String(a.cutAt)));
+    const latestByKind = new Map();
+    for (const entry of verified) {
+      if (!latestByKind.has(entry.kind)) latestByKind.set(entry.kind, entry);
+    }
+    const checked = [];
+    for (const kind of ['ledger', 'full']) {
+      const entry = latestByKind.get(kind);
+      if (!entry) continue;
+      const result = await this.verify(entry.backupId);
+      checked.push({
+        backupId: entry.backupId,
+        kind,
+        verified: result.verified === true,
+        error: result.error || null
+      });
+    }
+    await this._withIndexLock(async () => {
+      const latestIndex = await this._readIndex(policy);
+      latestIndex.lastDailyVerifyDate = today;
+      latestIndex.lastDailyVerifyAt = nowIso(this.now);
+      await this._writeIndex(policy, latestIndex);
+    });
+    return { date: today, checked, skipped: false };
+  }
+
+  async recordRestoreTest(
+    { backupId, recoveryId, targetInstanceId, newHistoryEpoch, restoredAt = null },
+    humanContext
+  ) {
+    await this._requireHuman(humanContext, { action: 'backup.record-restore', backupId, recoveryId });
+    const result = await this.noteRestoreTest(
+      { backupId, recoveryId, targetInstanceId, newHistoryEpoch, restoredAt },
+      { recordedBy: humanContext.principal.id }
+    );
+    if (!result.recorded) {
+      throw new AppError('BACKUP_INVALID', 'restore test backup was not found in this policy', {
+        details: { reason: result.reason }
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Called by the recovery service only after all restore files were written.
+   * A point outside this policy's destination simply returns recorded=false.
+   */
+  async noteRestoreTest(
+    { backupId, recoveryId, targetInstanceId, newHistoryEpoch, restoredAt = null },
+    { recordedBy = 'system:recovery' } = {}
+  ) {
+    if (typeof backupId !== 'string' || backupId === '') {
+      return { recorded: false, reason: 'unknown_backup' };
+    }
+    if (typeof recoveryId !== 'string' || recoveryId === '') {
+      throw new AppError('CONFIG_INVALID', 'recoveryId is required for a restore test record');
+    }
+    const policy = await this._policy({ required: false });
+    if (!policy) return { recorded: false, reason: 'policy_not_configured' };
+    const testedAt = nowIso(this.now);
+    const result = await this._withIndexLock(async () => {
+      const index = await this._readIndex(policy);
+      const entry = index.backups[backupId];
+      if (!entry) return { recorded: false, reason: 'unknown_backup' };
+      if (entry.status !== 'verified') {
+        throw new AppError('BACKUP_INVALID', 'only a verified recovery point can record a restore test');
+      }
+      if (entry.restoreTestedAt && entry.restoreTest?.recoveryId === recoveryId) {
+        return { recorded: true, deduplicated: true, backupId, restoreTestedAt: entry.restoreTestedAt };
+      }
+      entry.restoreTestedAt = testedAt;
+      entry.restoreTest = {
+        recoveryId,
+        targetInstanceId: targetInstanceId || null,
+        newHistoryEpoch: newHistoryEpoch || null,
+        restoredAt: restoredAt || null,
+        recordedAt: testedAt,
+        recordedBy
+      };
+      await this._writeIndex(policy, index);
+      return {
+        recorded: true,
+        deduplicated: false,
+        backupId,
+        restoreTestedAt: testedAt,
+        restoreTest: entry.restoreTest
+      };
+    });
+    if (!result.recorded || result.deduplicated) return result;
+    if (this.store) {
+      await this.store
+        .transaction(async (draft, tx) => {
+          if (!draft.backups[backupId]) return;
+          draft.backups[backupId].restoreTestedAt = testedAt;
+          draft.backups[backupId].restoreTest = result.restoreTest;
+          tx.appendEvent({
+            type: 'backup.restore_tested',
+            actor: recordedBy,
+            payload: {
+              backupId,
+              recoveryId,
+              targetInstanceId: targetInstanceId || null,
+              newHistoryEpoch: newHistoryEpoch || null
+            }
+          });
+        })
+        .catch((error) => {
+          this.logger?.warn?.('backup restore test ledger note failed', { message: error.message });
+        });
+    }
+    const { restoreTest, ...publicResult } = result;
+    return publicResult;
   }
 
   async status() {
@@ -732,12 +940,22 @@ export class BackupService {
             kind: latest.kind,
             cutAt: latest.cutAt,
             ageMs: Math.max(0, this.now().getTime() - Date.parse(latest.cutAt)),
+            verifiedAt: latest.verifiedAt || null,
+            restoreTestedAt: latest.restoreTestedAt || null,
             mediaCoverage: latest.mediaCoverage
           }
         : null,
       latestFull: latestFull
-        ? { backupId: latestFull.backupId, cutAt: latestFull.cutAt, mediaCoverage: latestFull.mediaCoverage }
+        ? {
+            backupId: latestFull.backupId,
+            cutAt: latestFull.cutAt,
+            verifiedAt: latestFull.verifiedAt || null,
+            restoreTestedAt: latestFull.restoreTestedAt || null,
+            mediaCoverage: latestFull.mediaCoverage
+          }
         : null,
+      lastDailyVerifyDate: index.lastDailyVerifyDate || null,
+      lastDailyVerifyAt: index.lastDailyVerifyAt || null,
       lastError: index.lastError || null
     };
   }
@@ -862,24 +1080,200 @@ export class BackupService {
     if (recomputed.planId !== planId) {
       throw new AppError('BACKUP_INVALID', 'prune plan is stale; re-plan before deleting');
     }
-    const index = await this._readIndex(policy);
-    const deleted = [];
-    for (const entry of plan.delete) {
-      const backup = index.backups[entry.backupId];
-      if (!backup || backup.status !== 'verified') continue;
-      if (entry.backupId === plan.protected.lastFull || entry.backupId === plan.protected.lastLedger) {
-        throw new AppError('BACKUP_INVALID', 'prune plan attempted to delete a protected last point');
+    return this._withIndexLock(async () => {
+      const index = await this._readIndex(policy);
+      const deleted = [];
+      for (const entry of plan.delete) {
+        const backup = index.backups[entry.backupId];
+        if (!backup || backup.status !== 'verified') continue;
+        if (entry.backupId === plan.protected.lastFull || entry.backupId === plan.protected.lastLedger) {
+          throw new AppError('BACKUP_INVALID', 'prune plan attempted to delete a protected last point');
+        }
+        const dir = path.join(policy.destinationRoot, 'backups', entry.backupId);
+        if (!ensureWithin(path.join(policy.destinationRoot, 'backups'), dir)) {
+          throw new AppError('BACKUP_INVALID', 'prune target escapes the backup root');
+        }
+        await fsp.rm(dir, { recursive: true, force: true });
+        delete index.backups[entry.backupId];
+        deleted.push(entry.backupId);
       }
-      const dir = path.join(policy.destinationRoot, 'backups', entry.backupId);
-      if (!ensureWithin(path.join(policy.destinationRoot, 'backups'), dir)) {
-        throw new AppError('BACKUP_INVALID', 'prune target escapes the backup root');
-      }
-      await fsp.rm(dir, { recursive: true, force: true });
-      delete index.backups[entry.backupId];
-      deleted.push(entry.backupId);
+      await this._writeIndex(policy, index);
+      return { deleted, planId, kept: plan.keep.length };
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Explicit backup scheduling (SPEC §27.1 / T20)
+ * ------------------------------------------------------------------ */
+
+export class BackupScheduler {
+  constructor({
+    backupService,
+    policyService,
+    now = () => new Date(),
+    logger,
+    tickMs = 60000
+  } = {}) {
+    if (!backupService || !policyService) {
+      throw new AppError('CONFIG_INVALID', 'backup scheduler requires backup and policy services');
     }
-    await this._writeIndex(policy, index);
-    return { deleted, planId, kept: plan.keep.length };
+    if (!Number.isSafeInteger(tickMs) || tickMs < 100) {
+      throw new AppError('CONFIG_INVALID', 'backup scheduler tickMs must be an integer >= 100');
+    }
+    this.backupService = backupService;
+    this.policyService = policyService;
+    this.now = now;
+    this.logger = logger;
+    this.tickMs = tickMs;
+    this.timer = null;
+    this.started = false;
+    this._tickPromise = null;
+    this.lastTickAt = null;
+    this.lastTickResult = null;
+    this.lastError = null;
+  }
+
+  async _policy() {
+    return this.policyService.load({ missingOk: true });
+  }
+
+  async start() {
+    if (this.started) return { started: true, deduplicated: true, tickMs: this.tickMs };
+    const policy = await this._policy();
+    if (!policy || policy.scheduleEnabled !== true) {
+      return { started: false, reason: 'schedule_disabled' };
+    }
+    this.started = true;
+    this.timer = setInterval(() => {
+      this.tick().catch((error) => {
+        this.lastError = { code: error.code || 'DEPENDENCY_UNAVAILABLE', message: error.message };
+        this.logger?.warn?.('backup scheduler tick failed', { message: error.message });
+      });
+    }, this.tickMs);
+    this.timer.unref?.();
+    return {
+      started: true,
+      deduplicated: false,
+      tickMs: this.tickMs,
+      nextTickAt: new Date(this.now().getTime() + this.tickMs).toISOString()
+    };
+  }
+
+  async stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.started = false;
+    if (this._tickPromise) {
+      let timeout;
+      const timer = new Promise((resolve) => {
+        timeout = setTimeout(resolve, 5000);
+        timeout.unref?.();
+      });
+      await Promise.race([this._tickPromise, timer]);
+      clearTimeout(timeout);
+    }
+    return { stopped: true };
+  }
+
+  async status() {
+    let policy = null;
+    let policyError = null;
+    try {
+      policy = await this._policy();
+    } catch (error) {
+      policyError = { code: error.code || 'BACKUP_INVALID', message: error.message };
+    }
+    return {
+      configured: Boolean(policy),
+      scheduleEnabled: policy?.scheduleEnabled === true,
+      started: this.started,
+      tickMs: this.tickMs,
+      lastTickAt: this.lastTickAt,
+      lastTickResult: this.lastTickResult,
+      lastError: this.lastError,
+      policyError
+    };
+  }
+
+  _requestId(kind, latest, intervalMs, nowMs) {
+    if (kind === 'full' && !latest) return 'scheduled-full:initial';
+    const slot = latest
+      ? Date.parse(latest.cutAt) + intervalMs
+      : Math.floor(nowMs / intervalMs) * intervalMs;
+    return `scheduled-${kind}:${new Date(slot).toISOString()}`;
+  }
+
+  async tick() {
+    if (!this.started) {
+      return { skipped: true, reason: 'scheduler_stopped', ran: [], errors: [] };
+    }
+    if (this._tickPromise) return this._tickPromise;
+    this._tickPromise = this._runTick().finally(() => {
+      this._tickPromise = null;
+    });
+    return this._tickPromise;
+  }
+
+  async _runTick() {
+    const startedAt = nowIso(this.now);
+    this.lastTickAt = startedAt;
+    const policy = await this._policy();
+    if (!policy || policy.scheduleEnabled !== true) {
+      this.lastTickResult = { skipped: true, reason: 'schedule_disabled', ran: [], errors: [] };
+      return this.lastTickResult;
+    }
+    const nowMs = this.now().getTime();
+    const intervalMs = policy.intervalMinutes * 60 * 1000;
+    const fullMs = policy.fullIntervalHours * 60 * 60 * 1000;
+    const status = await this.backupService.status();
+    const latest = status.latest;
+    const latestFull = status.latestFull;
+    const dueLedger = !latest || nowMs - Date.parse(latest.cutAt) >= intervalMs;
+    const dueFull = !latestFull || nowMs - Date.parse(latestFull.cutAt) >= fullMs;
+    const ran = [];
+    const errors = [];
+    const run = async (kind, requestId) => {
+      try {
+        const record = await this.backupService.createScheduled({ kind, requestId });
+        ran.push({
+          kind,
+          backupId: record.backupId,
+          deduplicated: record.deduplicated === true,
+          status: record.status
+        });
+        return record;
+      } catch (error) {
+        const entry = { kind, requestId, code: error.code || 'BACKUP_INVALID', message: error.message };
+        errors.push(entry);
+        this.lastError = entry;
+        return null;
+      }
+    };
+    if (dueLedger) {
+      await run('ledger', this._requestId('ledger', latest, intervalMs, nowMs));
+    }
+    if (dueFull) {
+      await run('full', this._requestId('full', latestFull, fullMs, nowMs));
+    }
+    let verify = null;
+    try {
+      verify = await this.backupService.dailyVerify();
+    } catch (error) {
+      const entry = { kind: 'verify', code: error.code || 'BACKUP_INVALID', message: error.message };
+      errors.push(entry);
+      this.lastError = entry;
+    }
+    const result = {
+      skipped: false,
+      ran,
+      verify,
+      errors,
+      tickAt: startedAt,
+      finishedAt: nowIso(this.now)
+    };
+    this.lastTickResult = result;
+    return result;
   }
 }
 
@@ -939,6 +1333,45 @@ function scopeCandidateKey(scope) {
   return `${scope.kind}:${scope.platform || ''}:${scope.accountId || ''}:${scope.action || ''}:${scope.provider || ''}:${scope.budgetId || ''}:${scope.adapterId || ''}:${scope.botAccountId || ''}:${scope.conversationId || ''}`;
 }
 
+function operationRecoveryScope(operation, workspaceId) {
+  if (operation.namespace === 'platform') {
+    return normalizeScope({
+      kind: 'account_action',
+      workspaceId,
+      platform: operation.accountRef?.platform || 'bilibili',
+      accountId: operation.accountRef?.accountId || '0',
+      action: operation.recoveryAction || operation.action
+    });
+  }
+  if (operation.namespace === 'external') {
+    return normalizeScope({
+      kind: 'account_action',
+      workspaceId,
+      platform: operation.accountRef?.platform || 'bilibili',
+      accountId: operation.accountRef?.accountId || '0',
+      action: 'external_publish'
+    });
+  }
+  if (operation.namespace === 'provider') {
+    return normalizeScope({
+      kind: 'provider_budget',
+      workspaceId,
+      provider: operation.budget?.provider || 'unknown',
+      budgetId: operation.budget?.budgetId || 'default'
+    });
+  }
+  if (operation.namespace === 'im') {
+    return normalizeScope({
+      kind: 'im_conversation',
+      workspaceId,
+      adapterId: operation.binding?.adapterId || 'dsh-im',
+      botAccountId: operation.binding?.botAccountId || 'unknown',
+      conversationId: operation.binding?.conversationId || 'unknown'
+    });
+  }
+  return normalizeScope({ kind: 'workspace', workspaceId });
+}
+
 export class RecoveryService {
   constructor({
     store,
@@ -947,6 +1380,7 @@ export class RecoveryService {
     humanProof,
     effectGateway = null,
     taskManager = null,
+    restoreRecorder = null,
     now = () => new Date(),
     hooks = {},
     logger
@@ -957,6 +1391,7 @@ export class RecoveryService {
     this.humanProof = humanProof;
     this.effectGateway = effectGateway;
     this.taskManager = taskManager;
+    this.restoreRecorder = restoreRecorder;
     this.now = now;
     this.hooks = hooks;
     this.logger = logger;
@@ -1024,8 +1459,20 @@ export class RecoveryService {
     const sourceDir = path.resolve(from);
     const targetDir = path.resolve(to);
     await ensureDir(targetDir);
-    const targetEntries = await fsp.readdir(targetDir);
+    let targetEntries = await fsp.readdir(targetDir);
     const existingCaseFile = path.join(targetDir, 'recovery', 'recovery.json');
+    const restoreMarkerFile = path.join(targetDir, '.restore-in-progress.json');
+    if (
+      targetEntries.length > 0 &&
+      !(await pathExists(existingCaseFile)) &&
+      targetEntries.includes('.restore-in-progress.json')
+    ) {
+      // A previous restore crashed before publishing recovery.json. The marker
+      // proves this target was owned by an incomplete restore, so remove the
+      // partial tree before retrying.
+      await clearRestoreTarget(targetDir);
+      targetEntries = [];
+    }
     if (targetEntries.length > 0) {
       if (await pathExists(existingCaseFile)) {
         const existing = JSON.parse(await fsp.readFile(existingCaseFile, 'utf8'));
@@ -1046,6 +1493,12 @@ export class RecoveryService {
       }
       throw new AppError('RECOVERY_REQUIRED', 'recovery target must be a new empty directory');
     }
+    await atomicWriteJson(restoreMarkerFile, {
+      requestId,
+      startedAt: nowIso(this.now),
+      targetDir
+    });
+    try {
     const verified = await verifyBackupDirectory(sourceDir, { now: this.now });
     if (verified.manifest.kind !== 'backup') throw new AppError('BACKUP_INVALID', 'only kind=backup can be restored');
     const sourceState = verified.state;
@@ -1100,34 +1553,9 @@ export class RecoveryService {
 
     const unknownExposures = {};
     for (const operation of Object.values(sourceState.operations || {})) {
-      if (operation.status !== 'unknown') continue;
-      let scope;
-      if (operation.namespace === 'platform') {
-        scope = {
-          kind: 'account_action',
-          workspaceId: sourceState.workspaceId,
-          platform: operation.accountRef?.platform || 'bilibili',
-          accountId: operation.accountRef?.accountId || '0',
-          action: operation.action
-        };
-      } else if (operation.namespace === 'provider') {
-        scope = {
-          kind: 'provider_budget',
-          workspaceId: sourceState.workspaceId,
-          provider: operation.budget?.provider || 'unknown',
-          budgetId: operation.budget?.budgetId || 'default'
-        };
-      } else if (operation.namespace === 'im') {
-        scope = {
-          kind: 'im_conversation',
-          workspaceId: sourceState.workspaceId,
-          adapterId: operation.binding?.adapterId || 'dsh-im',
-          botAccountId: operation.binding?.botAccountId || 'unknown',
-          conversationId: operation.binding?.conversationId || 'unknown'
-        };
-      } else {
-        continue;
-      }
+      if (!['unknown', 'dispatching', 'reserved'].includes(operation.status)) continue;
+      const scope = operationRecoveryScope(operation, sourceState.workspaceId);
+      if (scope.kind === 'workspace') continue;
       const exposureId = `exposure_${randomId('x').split('_').at(-1)}`;
       unknownExposures[exposureId] = {
         id: exposureId,
@@ -1135,8 +1563,15 @@ export class RecoveryService {
         scope,
         currency: operation.currency || null,
         maxMinor: Number.isSafeInteger(operation.amountMinor) ? operation.amountMinor : null,
-        source: 'operation_unknown',
+        source:
+          operation.status === 'reserved'
+            ? 'operation_reserved_at_cut'
+            : operation.status === 'dispatching'
+              ? 'operation_dispatching_at_cut'
+              : 'operation_unknown',
         operationRefs: [operation.id],
+        operationStatusAtCut: operation.status,
+        dispatchAtCut: operation.dispatchAt || null,
         evidenceRefs: [],
         status: 'active',
         revision: 1,
@@ -1147,6 +1582,12 @@ export class RecoveryService {
 
     const targetState = deepClone(sourceState);
     targetState.workspaceId = sourceState.workspaceId;
+    for (const operation of Object.values(targetState.operations || {})) {
+      if (['reserved', 'dispatching', 'unknown'].includes(operation.status)) {
+        operation.recoveryAmbiguous = true;
+        operation.recoveryCutStatus = operation.status;
+      }
+    }
     targetState.historyEpoch = newHistoryEpoch;
     // Facts that were still pending in the snapshot are preserved as the first
     // events of the new branch. They are never dropped just because the backup
@@ -1361,6 +1802,7 @@ export class RecoveryService {
       createdAt,
       updatedAt: createdAt
     };
+    await this.hooks.beforeStateWrite?.({ targetDir, recoveryId, targetState });
     await ensureDir(path.join(targetDir, 'recovery'));
     await atomicWriteJson(path.join(targetDir, 'state.json'), targetState);
     await atomicWriteJson(path.join(targetDir, 'instance.json'), instance);
@@ -1384,6 +1826,23 @@ export class RecoveryService {
       missingMedia,
       sourceBytes: verified.manifest.files.reduce((sum, entry) => sum + entry.sizeBytes, 0)
     });
+    let restoreTestRecord = null;
+    if (this.restoreRecorder) {
+      try {
+        restoreTestRecord = await this.restoreRecorder({
+          backupId: verified.manifest.backupId,
+          recoveryId,
+          targetInstanceId,
+          newHistoryEpoch,
+          restoredAt: nowIso(this.now)
+        });
+      } catch (error) {
+        // The restored copy is already complete. A missing policy/index must not
+        // turn a successful restore into a failed one.
+        this.logger?.warn?.('failed to record restore test', { message: error.message });
+      }
+    }
+    await fsp.rm(restoreMarkerFile, { force: true }).catch(() => {});
     return {
       recoveryId,
       workspaceId: sourceState.workspaceId,
@@ -1393,9 +1852,14 @@ export class RecoveryService {
       holds,
       unknownExposures,
       missingMedia,
+      restoreTestRecord,
       deduplicated: false,
       elapsedMs: this.now().getTime() - startedMs
     };
+    } catch (error) {
+      await clearRestoreTarget(targetDir).catch(() => {});
+      throw error;
+    }
   }
 
   async inspect(recoveryId = null) {
@@ -1468,14 +1932,58 @@ export class RecoveryService {
     await this._verifyProjection();
     const kind = evidence.kind || 'fact';
     if (!['fact', 'isolation'].includes(kind)) throw new AppError('RECOVERY_GAP', 'evidence kind is invalid');
-    if (evidence.repair?.operationId) {
-      throw new AppError('RECOVERY_GAP', 'operation repair must use operation resolve with the original ID');
-    }
     if (kind === 'isolation') {
       if (evidence.conclusion !== 'isolated') throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence is inconclusive');
       if (!evidence.source || !evidence.sourceHash) {
         throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence needs a trusted source and hash');
       }
+    }
+    const normalizedEvidenceScope = evidence.scope
+      ? normalizeScope(evidence.scope, recoveryCase.workspaceId)
+      : null;
+    let repair = null;
+    if (evidence.repair !== undefined && evidence.repair !== null) {
+      if (!this.effectGateway?._resolveRecoveredInTransaction) {
+        throw new AppError('RECOVERY_GAP', 'operation repair requires the effect gateway');
+      }
+      if (typeof evidence.repair !== 'object') throw new AppError('RECOVERY_GAP', 'repair must be an object');
+      const operationId = evidence.repair.operationId;
+      if (typeof operationId !== 'string' || operationId === '') {
+        throw new AppError('RECOVERY_GAP', 'repair.operationId is required');
+      }
+      if (!['confirmed', 'not_sent'].includes(evidence.repair.decision)) {
+        throw new AppError('RECOVERY_GAP', 'repair.decision must be confirmed or not_sent');
+      }
+      if (!normalizedEvidenceScope) {
+        throw new AppError('RECOVERY_GAP', 'operation repair evidence requires an explicit recovery scope');
+      }
+      const operationState = await this.store.getSnapshot();
+      const operation = operationState.operations?.[operationId];
+      if (!operation) {
+        throw new AppError('RECOVERY_GAP', 'repair.operationId does not exist; record a recovered fact instead');
+      }
+      const operationScope = operationRecoveryScope(operation, recoveryCase.workspaceId);
+      if (!scopeCovers(normalizedEvidenceScope, operationScope, recoveryCase.workspaceId)) {
+        throw new AppError('RECOVERY_GAP', 'repair evidence scope does not cover the operation');
+      }
+      if (
+        !(evidence.operationRefs || []).includes(operationId) &&
+        !(evidence.businessKeys || []).includes(operation.businessKey)
+      ) {
+        throw new AppError('RECOVERY_GAP', 'repair evidence must reference the operation or its business key');
+      }
+      if (operation.status === evidence.repair.decision) {
+        // Idempotent evidence may be recorded again; the transaction below
+        // reports already_resolved and does not settle twice.
+      } else if (!['unknown', 'reserved', 'dispatching'].includes(operation.status)) {
+        throw new AppError('RECOVERY_GAP', 'operation is already settled with a conflicting result');
+      }
+      repair = {
+        operationId,
+        decision: evidence.repair.decision,
+        receipt: evidence.repair.receipt || null,
+        note: normalizeText(evidence.repair.note || evidence.note || '').slice(0, 1000)
+      };
     }
     const evidenceId = `evidence_${randomId('e').split('_').at(-1)}`;
     const nextRevision = recoveryCase.revision + 1;
@@ -1484,15 +1992,19 @@ export class RecoveryService {
       id: evidenceId,
       caseId: recoveryCase.id,
       kind,
-      scope: evidence.scope ? normalizeScope(evidence.scope, recoveryCase.workspaceId) : null,
+      scope: normalizedEvidenceScope,
       source: String(evidence.source || 'local_owner'),
       sourceHash: String(evidence.sourceHash || jcsHash(evidence)),
       coveredRange: evidence.coveredRange || null,
       conclusion: evidence.conclusion || 'recorded',
-      operationRefs: evidence.operationRefs || [],
+      operationRefs: [
+        ...new Set([...(evidence.operationRefs || []), ...(repair ? [repair.operationId] : [])])
+      ],
       taskRefs: evidence.taskRefs || [],
       businessKeys: evidence.businessKeys || [],
-      repair: evidence.repair || null,
+      repair: repair
+        ? { operationId: repair.operationId, decision: repair.decision, receipt: repair.receipt }
+        : null,
       note: evidence.note ? normalizeText(evidence.note).slice(0, 2000) : '',
       reviewedBy: humanContext.principal.id,
       capturedAt: evidence.capturedAt || nowIso(this.now),
@@ -1501,7 +2013,8 @@ export class RecoveryService {
     };
     await ensureDir(path.join(this.recoveryDir, 'evidence'));
     const evidenceRelative = path.posix.join('evidence', `${evidenceId}.json`);
-    await atomicWriteJson(path.join(this.recoveryDir, evidenceRelative), record);
+    const evidenceFile = path.join(this.recoveryDir, evidenceRelative);
+    await atomicWriteJson(evidenceFile, record);
     const sha = sha256Hex(JSON.stringify(record));
     recoveryCase.evidenceRefs = [
       ...(recoveryCase.evidenceRefs || []),
@@ -1518,35 +2031,57 @@ export class RecoveryService {
     }
     recoveryCase.revision = nextRevision;
     recoveryCase.phase = 'reconciling';
-    await this.store.transaction(async (draft, tx) => {
-      draft.recovery.phase = 'reconciling';
-      draft.recovery.revision = nextRevision;
-      tx.appendEvent({
-        type: 'recovery.evidence',
-        actor: humanContext.principal.id,
-        payload: {
-          recoveryId: recoveryCase.id,
-          evidenceId,
-          kind,
-          conclusion: record.conclusion,
-          revision: nextRevision,
-          sourceHash: record.sourceHash
-        }
-      });
-      if (!record.repair && record.businessKeys.length > 0) {
+    let repairOutcome = null;
+    try {
+      repairOutcome = await this.store.transaction(async (draft, tx) => {
+        draft.recovery.phase = 'reconciling';
+        draft.recovery.revision = nextRevision;
         tx.appendEvent({
-          type: 'recovery.recovered_fact',
+          type: 'recovery.evidence',
           actor: humanContext.principal.id,
           payload: {
             recoveryId: recoveryCase.id,
             evidenceId,
-            businessKeys: record.businessKeys.slice(0, 100),
-            note: record.note.slice(0, 500)
+            kind,
+            conclusion: record.conclusion,
+            revision: nextRevision,
+            sourceHash: record.sourceHash
           }
         });
-      }
-    });
+        const outcome = repair
+          ? this.effectGateway._resolveRecoveredInTransaction(tx, {
+              operationId: repair.operationId,
+              decision: repair.decision,
+              receipt: repair.receipt,
+              note: repair.note,
+              principalId: humanContext.principal.id,
+              evidenceId
+            })
+          : null;
+        if (!repair && record.businessKeys.length > 0) {
+          tx.appendEvent({
+            type: 'recovery.recovered_fact',
+            actor: humanContext.principal.id,
+            payload: {
+              recoveryId: recoveryCase.id,
+              evidenceId,
+              businessKeys: record.businessKeys.slice(0, 100),
+              note: record.note.slice(0, 500)
+            }
+          });
+        }
+        return outcome;
+      });
+    } catch (error) {
+      await fsp.rm(evidenceFile, { force: true }).catch(() => {});
+      throw error;
+    }
     await this.hooks.afterEvidenceWritten?.({ recoveryCase, record });
+    const projected = await this.store.getSnapshot();
+    if (projected.recovery?.id === recoveryCase.id && projected.recovery.revision === nextRevision) {
+      recoveryCase.unknownExposures = deepClone(projected.recovery.unknownExposures || {});
+      recoveryCase.holds = deepClone(projected.recovery.holds || recoveryCase.holds);
+    }
     await this._writeCase(recoveryCase);
     await this.store.updateInstance((draft) => {
       draft.recoveryRevision = nextRevision;
@@ -1557,8 +2092,173 @@ export class RecoveryService {
       revision: nextRevision,
       phase: 'reconciling',
       fencingEvidence: Boolean(recoveryCase.fencingEvidence),
+      repair: repairOutcome
+        ? {
+            operationId: repair.operationId,
+            status: repairOutcome.status,
+            operationStatus: repairOutcome.operation?.status || null,
+            deduplicated: repairOutcome.deduplicated === true
+          }
+        : null,
       dispatchAllowed: false
     };
+  }
+
+  async _commitAuthorization(recoveryCase, decision, normalized, evidenceId, deduplicated = false) {
+    let state = await this.store.getSnapshot();
+    if (state.recovery?.id !== recoveryCase.id || state.recovery.revision !== decision.nextRevision) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'state projection does not match the prepared decision');
+    }
+    recoveryCase = await this._readCase();
+    if (recoveryCase.pendingDecision?.id !== decision.id) {
+      throw new AppError('RECOVERY_GAP', 'authorization decision changed while committing');
+    }
+    const previousCommit = recoveryCase.pendingDecision?.state === 'committed'
+      ? recoveryCase.pendingDecision.committedAt
+      : null;
+    recoveryCase.holds = deepClone(state.recovery.holds);
+    recoveryCase.phase = state.recovery.phase;
+    recoveryCase.revision = decision.nextRevision;
+    recoveryCase.pendingDecision = {
+      ...decision,
+      state: 'committed',
+      committedAt: previousCommit || nowIso(this.now)
+    };
+    if (!(recoveryCase.decisions || []).some((entry) => entry.id === decision.id)) {
+      recoveryCase.decisions = [
+        ...(recoveryCase.decisions || []),
+        {
+          id: decision.id,
+          scope: normalized,
+          scopeKey: decision.scopeKey,
+          evidenceId,
+          capabilities: decision.capabilities,
+          revision: decision.nextRevision,
+          committedAt: recoveryCase.pendingDecision.committedAt
+        }
+      ];
+    }
+    await this._writeCase(recoveryCase);
+    await this.hooks.afterCommitted?.({ recoveryCase, decision });
+    let instance = await this.store.getInstance();
+    const nextCapabilities = [...new Set([...(instance.allowedCapabilities || []), ...decision.capabilities])].sort();
+    const needsInstance =
+      instance.status !== 'active' ||
+      instance.recoveryRevision !== decision.nextRevision ||
+      !decision.capabilities.every((capability) => instance.allowedCapabilities.includes(capability));
+    if (needsInstance) {
+      await this.hooks.beforeInstanceUpdate?.({ recoveryCase, decision, nextCapabilities });
+      await this.store.updateInstance((draft) => {
+        draft.allowedCapabilities = nextCapabilities;
+        draft.status = 'active';
+        draft.activationRevision = (draft.activationRevision || 0) + 1;
+        draft.recoveryRevision = decision.nextRevision;
+      });
+    }
+    return {
+      recoveryId: recoveryCase.id,
+      phase: recoveryCase.phase,
+      revision: decision.nextRevision,
+      scope: normalized,
+      capabilities: decision.capabilities,
+      deduplicated
+    };
+  }
+
+  async _applyAuthorizationState(recoveryCase, state, decision, normalized, humanContext) {
+    if (state.recovery?.id !== recoveryCase.id) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'recovery case projection is inconsistent');
+    }
+    if (state.recovery.revision === decision.nextRevision) return false;
+    if (state.recovery.revision > decision.nextRevision) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'state revision is ahead of the authorization decision');
+    }
+    if (state.recovery.revision !== decision.nextRevision - 1) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'state revision is not the immediate predecessor');
+    }
+    const holds = [];
+    for (const hold of state.recovery.holds || []) {
+      if (hold.status === 'released') {
+        holds.push(hold);
+        continue;
+      }
+      const same = hold.scopeKey === decision.scopeKey;
+      const normalizedHold = normalizeScope(hold.scope, recoveryCase.workspaceId);
+      if (same) {
+        holds.push({
+          ...hold,
+          status: 'released',
+          releasedAt: nowIso(this.now),
+          releaseDecisionRef: decision.id,
+          revision: decision.nextRevision
+        });
+        continue;
+      }
+      if (
+        normalizedHold.kind === 'account_action' &&
+        normalizedHold.action === '*' &&
+        normalized.platform === normalizedHold.platform &&
+        normalized.accountId === normalizedHold.accountId
+      ) {
+        holds.push({
+          ...hold,
+          status: 'released',
+          releasedAt: nowIso(this.now),
+          releaseDecisionRef: decision.id,
+          revision: decision.nextRevision
+        });
+        for (const action of ALL_ACCOUNT_ACTIONS) {
+          if (action === normalized.action) continue;
+          holds.push(
+            recoveryHold({
+              caseId: recoveryCase.id,
+              scope: { ...normalizedHold, action },
+              revision: decision.nextRevision,
+              createdAt: nowIso(this.now)
+            })
+          );
+        }
+        continue;
+      }
+      holds.push(hold);
+    }
+    const released = holds.some(
+      (hold) => hold.status === 'released' && hold.releaseDecisionRef === decision.id
+    );
+    if (!released) throw new AppError('RECOVERY_GAP', 'no matching hold could be split/released for this scope');
+    const phase = holds.some((hold) => hold.status !== 'released') ? 'restricted' : 'released';
+    await this.store.transaction(async (draft, tx) => {
+      if (draft.recovery.revision !== decision.nextRevision - 1) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'state revision changed during authorization');
+      }
+      draft.recovery.phase = phase;
+      draft.recovery.revision = decision.nextRevision;
+      draft.recovery.holds = holds;
+      if (this.taskManager) {
+        for (const task of Object.values(draft.tasks || {})) {
+          for (const hold of (task.holds || []).filter((entry) => entry.kind === 'recovery' && entry.status !== 'released')) {
+            if (
+              hold.caseId === recoveryCase.id &&
+              scopeCovers(normalized, hold.scope, recoveryCase.workspaceId)
+            ) {
+              this.taskManager.releaseHold(tx, task, hold.id, decision.id);
+            }
+          }
+        }
+      }
+      tx.appendEvent({
+        type: 'recovery.scope.authorized',
+        actor: humanContext.principal.id,
+        payload: {
+          recoveryId: recoveryCase.id,
+          scope: normalized,
+          decisionId: decision.id,
+          revision: decision.nextRevision
+        }
+      });
+    });
+    await this.hooks.afterStateProjection?.({ recoveryCase, decision, stateUpdated: true });
+    return true;
   }
 
   async authorize({ recoveryId, scope, evidenceId }, humanContext) {
@@ -1568,197 +2268,132 @@ export class RecoveryService {
       scope: scope ? jcsHash(scope) : null,
       evidenceId: evidenceId || null
     });
-    const normalized = normalizeScope(scope, (await this._readCase()).workspaceId);
-    const targetKey = scopeKeyFor(normalized);
     let recoveryCase = await this._readCase();
     if (recoveryId && recoveryId !== recoveryCase.id) throw new AppError('RECOVERY_REQUIRED', 'recovery case not found');
-    await this._verifyProjection();
-    if (!recoveryCase.fencingEvidence) {
-      throw new AppError('RECOVERY_FENCING_REQUIRED', 'old writer isolation evidence has not been recorded');
-    }
-    const evidenceRef = (recoveryCase.evidenceRefs || []).find((ref) => ref.id === evidenceId);
-    if (!evidenceRef) throw new AppError('RECOVERY_GAP', 'authorization evidence is missing');
-    if (!recoveryCase.evidenceRefs.some((ref) => ref.kind === 'isolation' && ref.id === recoveryCase.fencingEvidence.id)) {
-      throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence is not part of this case');
-    }
-    const pending = recoveryCase.pendingDecision;
-    if (pending && pending.scopeKey === targetKey && pending.state === 'committed' && pending.evidenceId === evidenceId) {
-      const instance = await this.store.getInstance();
-      const capabilities = pending.capabilities || capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
-      if (!capabilities.every((capability) => instance.allowedCapabilities.includes(capability))) {
-        await this.store.updateInstance((draft) => {
-          draft.allowedCapabilities = [...new Set([...(draft.allowedCapabilities || []), ...capabilities])].sort();
-          draft.status = 'active';
-          draft.activationRevision = (draft.activationRevision || 0) + 1;
-          draft.recoveryRevision = pending.nextRevision;
-        });
+    const normalized = normalizeScope(scope, recoveryCase.workspaceId);
+    const targetKey = scopeKeyFor(normalized);
+    let state = await this.store.getSnapshot();
+    let pending = recoveryCase.pendingDecision;
+
+    // Resume any previously prepared/committed decision before applying the
+    // strict projection check. A crash can leave the case file one revision
+    // behind the ledger, or the instance one revision behind the case file.
+    if (pending) {
+      if (state.recovery?.id !== recoveryCase.id) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'recovery case projection is inconsistent');
       }
-      return {
-        recoveryId: recoveryCase.id,
-        phase: recoveryCase.phase,
-        revision: recoveryCase.revision,
-        scope: normalized,
-        capabilities,
-        deduplicated: true
-      };
-    }
-    if (evidenceRef.revision !== recoveryCase.revision) {
-      throw new AppError('RECOVERY_GAP', 'authorization evidence revision is stale');
-    }
-    const evidencePath = path.join(this.recoveryDir, evidenceRef.path);
-    if (await pathExists(evidencePath)) {
-      const evidenceRecord = JSON.parse(await fsp.readFile(evidencePath, 'utf8'));
-      if (evidenceRecord.scope) {
-        const evidenceScope = normalizeScope(evidenceRecord.scope, recoveryCase.workspaceId);
-        if (!scopeCovers(evidenceScope, normalized) && !scopeCovers(normalized, evidenceScope)) {
-          throw new AppError('RECOVERY_GAP', 'authorization evidence does not cover the requested scope');
+      const sameDecision = pending.scopeKey === targetKey && pending.evidenceId === evidenceId;
+      if (pending.state === 'committed') {
+        if (state.recovery.revision !== pending.nextRevision) {
+          throw new AppError('RECOVERY_FENCING_REQUIRED', 'committed decision is missing its ledger projection');
+        }
+        if (sameDecision) {
+          const capabilities = pending.capabilities || capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
+          return this._commitAuthorization(
+            recoveryCase,
+            { ...pending, capabilities },
+            normalized,
+            evidenceId,
+            true
+          );
+        }
+        const instance = await this.store.getInstance();
+        const committedCaps = pending.capabilities || [];
+        const instanceComplete =
+          instance.recoveryRevision === pending.nextRevision &&
+          instance.status === 'active' &&
+          committedCaps.every((capability) => instance.allowedCapabilities.includes(capability));
+        if (!instanceComplete) {
+          await this._commitAuthorization(
+            recoveryCase,
+            { ...pending, capabilities: committedCaps },
+            normalizeScope(pending.scope, recoveryCase.workspaceId),
+            pending.evidenceId,
+            true
+          );
+          recoveryCase = await this._readCase();
+          state = await this.store.getSnapshot();
+        }
+        // A committed decision is history, not a lock on the next scope.
+        recoveryCase.pendingDecision = null;
+        await this._writeCase(recoveryCase);
+        pending = null;
+      } else {
+        if (!sameDecision) {
+          throw new AppError('RECOVERY_GAP', 'another authorization decision is pending; retry it first');
+        }
+        if (state.recovery.revision === pending.nextRevision) {
+          const capabilities = pending.capabilities || capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
+          return this._commitAuthorization(
+            recoveryCase,
+            { ...pending, capabilities },
+            normalized,
+            evidenceId,
+            true
+          );
+        }
+        if (state.recovery.revision > pending.nextRevision) {
+          throw new AppError('RECOVERY_FENCING_REQUIRED', 'state revision is ahead of the pending decision');
         }
       }
     }
-    const capabilities = capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
-    const nextRevision = recoveryCase.revision + 1;
-    const decision = pending && pending.scopeKey === targetKey
-      ? pending
-      : {
-          id: `decision_${randomId('d').split('_').at(-1)}`,
-          state: 'prepared',
-          scope: normalized,
-          scopeKey: targetKey,
-          evidenceId,
-          nextRevision,
-          capabilities,
-          preparedAt: nowIso(this.now),
-          committedAt: null
-        };
-    if (!recoveryCase.pendingDecision || recoveryCase.pendingDecision.scopeKey !== targetKey) {
+    if (!pending) {
+      await this._verifyProjection();
+      state = await this.store.getSnapshot();
+    }
+
+    if (!recoveryCase.fencingEvidence) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'old writer isolation evidence has not been recorded');
+    }
+    if (!recoveryCase.evidenceRefs.some((ref) => ref.kind === 'isolation' && ref.id === recoveryCase.fencingEvidence.id)) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence is not part of this case');
+    }
+    const evidenceRef = (recoveryCase.evidenceRefs || []).find((ref) => ref.id === evidenceId);
+    if (!evidenceRef) throw new AppError('RECOVERY_GAP', 'authorization evidence is missing');
+    if (evidenceRef.revision > recoveryCase.revision) {
+      throw new AppError('RECOVERY_GAP', 'authorization evidence revision is stale');
+    }
+    if (evidenceRef.kind === 'isolation' && evidenceId !== recoveryCase.fencingEvidence.id) {
+      throw new AppError('RECOVERY_GAP', 'authorization evidence is not the current isolation evidence');
+    }
+    const evidencePath = path.join(this.recoveryDir, evidenceRef.path);
+    if (!(await pathExists(evidencePath))) {
+      throw new AppError('RECOVERY_GAP', 'authorization evidence file is missing');
+    }
+    const evidenceRecord = JSON.parse(await fsp.readFile(evidencePath, 'utf8'));
+    if (sha256Hex(JSON.stringify(evidenceRecord)) !== evidenceRef.sha256) {
+      throw new AppError('RECOVERY_GAP', 'authorization evidence file hash does not match the case');
+    }
+    if (evidenceRecord.scope) {
+      const evidenceScope = normalizeScope(evidenceRecord.scope, recoveryCase.workspaceId);
+      if (!scopeCovers(evidenceScope, normalized) && !scopeCovers(normalized, evidenceScope)) {
+        throw new AppError('RECOVERY_GAP', 'authorization evidence does not cover the requested scope');
+      }
+    }
+    const capabilities = pending?.capabilities || capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
+    const nextRevision = pending?.nextRevision || recoveryCase.revision + 1;
+    const decision = pending || {
+      id: `decision_${randomId('d').split('_').at(-1)}`,
+      state: 'prepared',
+      scope: normalized,
+      scopeKey: targetKey,
+      evidenceId,
+      nextRevision,
+      capabilities,
+      preparedAt: nowIso(this.now),
+      committedAt: null
+    };
+    if (!pending) {
+      if (state.recovery.revision !== recoveryCase.revision) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'state revision is not the case revision');
+      }
       recoveryCase.pendingDecision = decision;
       await this._writeCase(recoveryCase);
       await this.hooks.afterPrepared?.({ recoveryCase, decision });
     }
-    let stateUpdated = false;
-    const currentState = await this.store.getSnapshot();
-    if (currentState.recovery.revision < decision.nextRevision) {
-      const holds = [];
-      for (const hold of recoveryCase.holds || []) {
-        if (hold.status === 'released') {
-          holds.push(hold);
-          continue;
-        }
-        const same = hold.scopeKey === targetKey;
-        const normalizedHold = normalizeScope(hold.scope, recoveryCase.workspaceId);
-        if (same) {
-          holds.push({
-            ...hold,
-            status: 'released',
-            releasedAt: nowIso(this.now),
-            releaseDecisionRef: decision.id,
-            revision: decision.nextRevision
-          });
-          continue;
-        }
-        if (
-          normalizedHold.kind === 'account_action' &&
-          normalizedHold.action === '*' &&
-          normalized.platform === normalizedHold.platform &&
-          normalized.accountId === normalizedHold.accountId
-        ) {
-          holds.push({
-            ...hold,
-            status: 'released',
-            releasedAt: nowIso(this.now),
-            releaseDecisionRef: decision.id,
-            revision: decision.nextRevision
-          });
-          for (const action of ALL_ACCOUNT_ACTIONS) {
-            if (action === normalized.action) continue;
-            holds.push(
-              recoveryHold({
-                caseId: recoveryCase.id,
-                scope: { ...normalizedHold, action },
-                revision: decision.nextRevision,
-                createdAt: nowIso(this.now)
-              })
-            );
-          }
-          continue;
-        }
-        holds.push(hold);
-      }
-      if (!holds.some((hold) => hold.status !== 'released' && scopeCovers(hold.scope, normalized))) {
-        // Reaching here means the target scope is now released (or was never
-        // covered, in which case fail closed).
-      }
-      const released = holds.some(
-        (hold) => hold.status === 'released' && hold.releaseDecisionRef === decision.id
-      );
-      if (!released) throw new AppError('RECOVERY_GAP', 'no matching hold could be split/released for this scope');
-      const phase = holds.some((hold) => hold.status !== 'released') ? 'restricted' : 'released';
-      await this.store.transaction(async (draft, tx) => {
-        draft.recovery.phase = phase;
-        draft.recovery.revision = decision.nextRevision;
-        draft.recovery.holds = holds;
-        if (this.taskManager) {
-          for (const task of Object.values(draft.tasks || {})) {
-            for (const hold of (task.holds || []).filter((entry) => entry.kind === 'recovery' && entry.status !== 'released')) {
-              if (
-                hold.caseId === recoveryCase.id &&
-                scopeCovers(normalized, hold.scope, recoveryCase.workspaceId)
-              ) {
-                this.taskManager.releaseHold(tx, task, hold.id, decision.id);
-              }
-            }
-          }
-        }
-        tx.appendEvent({
-          type: 'recovery.scope.authorized',
-          actor: humanContext.principal.id,
-          payload: {
-            recoveryId: recoveryCase.id,
-            scope: normalized,
-            decisionId: decision.id,
-            revision: decision.nextRevision
-          }
-        });
-      });
-      stateUpdated = true;
-      await this.hooks.afterStateProjection?.({ recoveryCase, decision, stateUpdated });
-    }
-    recoveryCase = await this._readCase();
-    recoveryCase.holds = (await this.store.getSnapshot()).recovery.holds;
-    recoveryCase.phase = (await this.store.getSnapshot()).recovery.phase;
-    recoveryCase.revision = decision.nextRevision;
-    recoveryCase.pendingDecision = { ...decision, state: 'committed', committedAt: nowIso(this.now) };
-    recoveryCase.decisions = [
-      ...(recoveryCase.decisions || []),
-      {
-        id: decision.id,
-        scope: normalized,
-        scopeKey: targetKey,
-        evidenceId,
-        capabilities,
-        revision: decision.nextRevision,
-        committedAt: nowIso(this.now)
-      }
-    ];
-    await this._writeCase(recoveryCase);
-    await this.hooks.afterCommitted?.({ recoveryCase, decision });
-    const instance = await this.store.getInstance();
-    const nextCapabilities = [...new Set([...(instance.allowedCapabilities || []), ...capabilities])].sort();
-    await this.hooks.beforeInstanceUpdate?.({ recoveryCase, decision, nextCapabilities });
-    await this.store.updateInstance((draft) => {
-      draft.allowedCapabilities = nextCapabilities;
-      draft.status = 'active';
-      draft.activationRevision = (draft.activationRevision || 0) + 1;
-      draft.recoveryRevision = decision.nextRevision;
-    });
-    return {
-      recoveryId: recoveryCase.id,
-      phase: recoveryCase.phase,
-      revision: decision.nextRevision,
-      scope: normalized,
-      capabilities,
-      deduplicated: false
-    };
+    state = await this.store.getSnapshot();
+    await this._applyAuthorizationState(recoveryCase, state, decision, normalized, humanContext);
+    return this._commitAuthorization(recoveryCase, decision, normalized, evidenceId, Boolean(pending));
   }
 
   async refreeze({ recoveryId, scope, reason }, humanContext) {
@@ -1778,6 +2413,13 @@ export class RecoveryService {
     recoveryCase.holds = [...(recoveryCase.holds || []), hold];
     recoveryCase.revision += 1;
     recoveryCase.phase = 'restricted';
+    if (recoveryCase.pendingDecision) {
+      recoveryCase.lastInvalidatedDecision = {
+        ...recoveryCase.pendingDecision,
+        invalidatedByRefreezeAt: nowIso(this.now)
+      };
+      recoveryCase.pendingDecision = null;
+    }
     await this._writeCase(recoveryCase);
     await this.store.transaction(async (draft, tx) => {
       draft.recovery.holds.push(hold);
