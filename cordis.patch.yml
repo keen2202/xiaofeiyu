@@ -1,5 +1,8 @@
 - insert:
   - id: dsh-bili-unified
     name: dsh-bili-unified
+    enabled: true
+    exports: dsh-bili-unified
     config:
       enabled: true
+      httpPrefix: /dsh-bili-unified/api
