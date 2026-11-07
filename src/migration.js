@@ -1,6 +1,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.js';
+import { segmentHash } from './event-journal.js';
 import {
   assertNoMatchingHold,
   makeMigrationHold,
@@ -241,7 +242,20 @@ export class MigrationService {
       for (const segment of Object.values(refreshed.journalSegments || {})) {
         const source = resolveInside(this.journalDir, segment.relativePath);
         if (!(await pathExists(source))) throw new AppError('JOURNAL_CORRUPTED', 'journal segment is missing');
-        await addFile(path.posix.join('journal', segment.relativePath), source, 'journal');
+        const packageRelative = path.posix.join('journal', segment.relativePath);
+        await addFile(packageRelative, source, 'journal');
+        const copiedSegment = JSON.parse(
+          await fsp.readFile(resolveInside(tempDir, packageRelative), 'utf8')
+        );
+        if (
+          copiedSegment.historyEpoch !== segment.historyEpoch ||
+          copiedSegment.startSeq !== segment.startSeq ||
+          copiedSegment.endSeq !== segment.endSeq ||
+          copiedSegment.segmentHash !== segment.hash ||
+          segmentHash(copiedSegment.historyEpoch, copiedSegment.events) !== segment.hash
+        ) {
+          throw new AppError('JOURNAL_CORRUPTED', 'target journal segment integrity check failed');
+        }
       }
       for (const entry of Object.values(refreshed.diaries || {})) {
         if (!entry.targetFile || entry.pendingCommit) continue;
@@ -250,6 +264,9 @@ export class MigrationService {
           throw new AppError('MIGRATION_BLOCKED', 'diary body listed in the index is missing');
         }
         await addFile(path.posix.join('diary', entry.targetFile), source, 'diary');
+        if (entry.contentHash && sha256Hex(await fsp.readFile(source, 'utf8')) !== entry.contentHash) {
+          throw new AppError('MIGRATION_BLOCKED', 'target diary digest does not match its ledger');
+        }
       }
       for (const artifact of Object.values(refreshed.artifacts || {})) {
         if (!isSafeRelativePath(artifact.relativePath)) throw new AppError('ARTIFACT_INVALID', 'artifact path is unsafe');
@@ -432,6 +449,10 @@ export class MigrationService {
 
   async importPackage({ from, dataDir }, humanContext) {
     await this._requireHuman(humanContext, { action: 'migration.import', from, dataDir });
+    return this._importPackage({ from, dataDir });
+  }
+
+  async _importPackage({ from, dataDir }) {
     if (!path.isAbsolute(from) || !path.isAbsolute(dataDir)) {
       throw new AppError('CONFIG_INVALID', 'import source and target must be absolute paths');
     }
@@ -474,15 +495,16 @@ export class MigrationService {
       for (const task of Object.values(targetState.tasks || {})) {
         if (['succeeded', 'cancelled'].includes(task.status)) continue;
         if (!Array.isArray(task.holds)) task.holds = [];
-        task.holds.push(
-          makeMigrationHold({
-            id: `hold_migration_${task.id}`,
-            scope: { kind: 'workspace', workspaceId: targetState.workspaceId },
-            revision: 1,
-            evidenceRefs: [],
-            createdAt: nowIso(this.now)
-          })
-        );
+        const migrationHold = makeMigrationHold({
+          id: `hold_migration_${task.id}`,
+          scope: { kind: 'workspace', workspaceId: targetState.workspaceId },
+          revision: 1,
+          evidenceRefs: [],
+          createdAt: nowIso(this.now)
+        });
+        const existingHoldIndex = task.holds.findIndex((hold) => hold.id === migrationHold.id);
+        if (existingHoldIndex >= 0) task.holds[existingHoldIndex] = migrationHold;
+        else task.holds.push(migrationHold);
         task.isSettled = false;
       }
       for (const notification of Object.values(targetState.outbox || {})) {
@@ -625,6 +647,10 @@ export class MigrationService {
 
   async activate({ migrationId, receipt, dataDir }, humanContext) {
     await this._requireHuman(humanContext, { action: 'migration.activate', migrationId, snapshotHash: receipt?.snapshotHash });
+    return this._activate({ migrationId, receipt, dataDir });
+  }
+
+  async _activate({ migrationId, receipt, dataDir }) {
     const state = await readJson(path.join(dataDir, 'state.json'), 'MIGRATION_BLOCKED');
     const instance = await readJson(path.join(dataDir, 'instance.json'), 'MIGRATION_BLOCKED');
     const manifest = await readJson(path.join(dataDir, 'migration-package.json'), 'MIGRATION_BLOCKED');
@@ -730,21 +756,45 @@ export class MigrationService {
     return result;
   }
 
-  async disableTarget({ migrationId, targetDataDir = null }, humanContext) {
+  async disableTarget(
+    { migrationId, targetDataDir = null, targetStopped = false, targetStopEvidence = null },
+    humanContext
+  ) {
     await this._requireHuman(humanContext, { action: 'migration.disable-target', migrationId });
     const state = await this.store.getSnapshot();
     if (state.migration?.id !== migrationId || state.migration.phase !== 'released') {
       throw new AppError('MIGRATION_BLOCKED', 'only a released source can disable its target');
     }
-    if (targetDataDir) {
-      if (!path.isAbsolute(targetDataDir)) throw new AppError('CONFIG_INVALID', 'targetDataDir must be absolute');
-      const targetStateFile = path.join(targetDataDir, 'state.json');
-      const targetInstanceFile = path.join(targetDataDir, 'instance.json');
-      const targetState = await readJson(targetStateFile);
-      const targetInstance = await readJson(targetInstanceFile);
-      if (targetState.migration?.id !== migrationId) {
-        throw new AppError('MIGRATION_BLOCKED', 'target data directory does not belong to this migration');
-      }
+    if (targetStopped !== true) {
+      throw new AppError('MIGRATION_BLOCKED', 'target writer stop must be explicitly attested before disable-target');
+    }
+    if (typeof targetStopEvidence !== 'string' || targetStopEvidence.trim() === '') {
+      throw new AppError('MIGRATION_BLOCKED', 'target stop evidence is required before disable-target');
+    }
+    if (typeof targetDataDir !== 'string' || !path.isAbsolute(targetDataDir)) {
+      throw new AppError('MIGRATION_BLOCKED', 'targetDataDir is required and must be absolute; source remains blocked until the target is reachable');
+    }
+    const targetDir = path.resolve(targetDataDir);
+    if (targetDir === path.resolve(this.dataDir || '')) {
+      throw new AppError('MIGRATION_BLOCKED', 'targetDataDir must not be the active source data directory');
+    }
+    const targetStateFile = path.join(targetDir, 'state.json');
+    const targetInstanceFile = path.join(targetDir, 'instance.json');
+    if (!(await pathExists(targetStateFile)) || !(await pathExists(targetInstanceFile))) {
+      throw new AppError('MIGRATION_BLOCKED', 'target latest ledger is unavailable; disable-target remains blocked');
+    }
+    const targetState = await readJson(targetStateFile);
+    const targetInstance = await readJson(targetInstanceFile);
+    if (targetState.migration?.id !== migrationId) {
+      throw new AppError('MIGRATION_BLOCKED', 'target data directory does not belong to this migration');
+    }
+    if (targetState.workspaceId !== state.workspaceId) {
+      throw new AppError('MIGRATION_BLOCKED', 'target workspace does not match the source');
+    }
+    if (!['active', 'validated', 'paused', 'disabled'].includes(targetInstance.status)) {
+      throw new AppError('MIGRATION_BLOCKED', `target instance status ${targetInstance.status} cannot be disabled`);
+    }
+    if (targetInstance.status !== 'disabled' || targetState.migration.phase !== 'disabled') {
       targetState.migration = {
         ...targetState.migration,
         phase: 'disabled',
@@ -756,24 +806,237 @@ export class MigrationService {
       await atomicWriteJson(targetStateFile, targetState);
       await atomicWriteJson(targetInstanceFile, targetInstance);
     }
+    const readbackState = await readJson(targetStateFile);
+    const readbackInstance = await readJson(targetInstanceFile);
+    if (
+      readbackInstance.status !== 'disabled' ||
+      readbackState.migration?.phase !== 'disabled' ||
+      (readbackInstance.allowedCapabilities || []).length !== 0
+    ) {
+      throw new AppError('MIGRATION_BLOCKED', 'target did not persist the disabled state; source remains blocked');
+    }
+    const stopEvidenceHash = sha256Hex(targetStopEvidence);
     const result = await this.store.transaction(async (draft, tx) => {
       draft.migration = {
         ...draft.migration,
         targetDisabledAt: nowIso(this.now),
-        targetDisabled: true
+        targetDisabled: true,
+        targetDataDir: targetDir,
+        targetStopEvidenceHash: stopEvidenceHash,
+        targetStopEvidence: targetStopEvidence.trim().slice(0, 1000)
       };
       tx.appendEvent({
         type: 'migration.target.disabled',
         actor: humanContext.principal.id,
-        payload: { migrationId, targetDataDirProvided: Boolean(targetDataDir) }
+        payload: { migrationId, targetDataDir: targetDir, targetStopEvidenceHash: stopEvidenceHash }
       });
       return deepClone(draft.migration);
     });
     return result;
   }
 
-  async rollback({ migrationId, targetDataDir }, humanContext) {
-    await this._requireHuman(humanContext, { action: 'migration.rollback', migrationId, targetDataDir });
+  async _buildReversePackage({
+    migrationId,
+    targetDataDir,
+    reverseMigrationId,
+    reverseTargetInstanceId,
+    targetState,
+    targetInstance,
+    humanContext
+  }) {
+    const config = this._config();
+    if (targetState.version !== 3) throw new AppError('MIGRATION_BLOCKED', 'target state is not v3');
+    if (targetState.migration?.id !== migrationId) {
+      throw new AppError('MIGRATION_BLOCKED', 'target state does not belong to this migration');
+    }
+    if (targetInstance.status !== 'disabled') {
+      throw new AppError('MIGRATION_BLOCKED', 'target must be disabled before reverse packaging');
+    }
+    if (Object.keys(targetState.artifactPendingImports || {}).length > 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'target has pending artifact imports');
+    }
+    if (Object.values(targetState.diaries || {}).some((entry) => entry.pendingCommit)) {
+      throw new AppError('MIGRATION_BLOCKED', 'target has pending diary commits');
+    }
+    const inFlight = Object.values(targetState.operations || {}).filter((operation) =>
+      ['reserved', 'dispatching'].includes(operation.status)
+    );
+    if (inFlight.length > 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'target has in-flight operations; resolve them before reverse migration', {
+        details: { operations: inFlight.map((operation) => operation.id) }
+      });
+    }
+    const packageDir = resolveInside(this.migrationsDir, reverseMigrationId);
+    const tempDir = `${packageDir}.tmp.${randomId('t')}`;
+    const createdAt = nowIso(this.now);
+    try {
+      await ensureDir(tempDir);
+      const files = [];
+      const addFile = async (relative, source, role, artifactId = null) => {
+        if (!isSafeRelativePath(relative)) throw new AppError('MIGRATION_BLOCKED', 'unsafe reverse package path');
+        const target = resolveInside(tempDir, relative);
+        await ensureDir(path.dirname(target));
+        const copied = await copyFileWithHash(source, target);
+        const entry = {
+          path: relative,
+          role,
+          artifactId,
+          sizeBytes: copied.sizeBytes,
+          sha256: copied.sha256,
+          required: true
+        };
+        files.push(entry);
+        return entry;
+      };
+      const sanitized = sanitizeStateForMigration(targetState);
+      const stateJson = `${JSON.stringify(sanitized, null, 2)}\n`;
+      await fsp.writeFile(path.join(tempDir, 'state.json'), stateJson, { mode: 0o600 });
+      files.push({
+        path: 'state.json',
+        role: 'state',
+        sizeBytes: Buffer.byteLength(stateJson),
+        sha256: sha256Hex(stateJson),
+        required: true
+      });
+      const targetJournalDir = path.join(targetDataDir, 'journal');
+      for (const segment of Object.values(targetState.journalSegments || {})) {
+        if (!isSafeRelativePath(segment.relativePath)) {
+          throw new AppError('JOURNAL_CORRUPTED', 'target journal segment path is unsafe');
+        }
+        const source = resolveInside(targetJournalDir, segment.relativePath);
+        if (!(await pathExists(source))) {
+          throw new AppError('JOURNAL_CORRUPTED', 'target journal segment is missing');
+        }
+        const packageRelative = path.posix.join('journal', segment.relativePath);
+        await addFile(packageRelative, source, 'journal');
+        const copiedSegment = JSON.parse(
+          await fsp.readFile(resolveInside(tempDir, packageRelative), 'utf8')
+        );
+        if (
+          copiedSegment.historyEpoch !== segment.historyEpoch ||
+          copiedSegment.startSeq !== segment.startSeq ||
+          copiedSegment.endSeq !== segment.endSeq ||
+          copiedSegment.segmentHash !== segment.hash ||
+          segmentHash(copiedSegment.historyEpoch, copiedSegment.events) !== segment.hash
+        ) {
+          throw new AppError('JOURNAL_CORRUPTED', 'target journal segment integrity check failed');
+        }
+      }
+      const targetDiaryDir = path.join(targetDataDir, 'diary');
+      for (const entry of Object.values(targetState.diaries || {})) {
+        if (!entry.targetFile) continue;
+        if (!isSafeRelativePath(entry.targetFile)) {
+          throw new AppError('MIGRATION_BLOCKED', 'target diary path is unsafe');
+        }
+        const source = resolveInside(targetDiaryDir, entry.targetFile);
+        if (!(await pathExists(source))) {
+          throw new AppError('MIGRATION_BLOCKED', 'target diary body is missing');
+        }
+        await addFile(path.posix.join('diary', entry.targetFile), source, 'diary');
+        if (entry.contentHash && sha256Hex(await fsp.readFile(source, 'utf8')) !== entry.contentHash) {
+          throw new AppError('MIGRATION_BLOCKED', 'target diary digest does not match its ledger');
+        }
+      }
+      const targetArtifactDir = path.join(targetDataDir, 'artifacts');
+      for (const artifact of Object.values(targetState.artifacts || {})) {
+        if (!isSafeRelativePath(artifact.relativePath)) {
+          throw new AppError('ARTIFACT_INVALID', 'target artifact path is unsafe');
+        }
+        const source = resolveInside(targetArtifactDir, artifact.relativePath);
+        if (!(await pathExists(source))) {
+          throw new AppError('MIGRATION_BLOCKED', 'target artifact bytes are missing', {
+            details: { artifactId: artifact.artifactId }
+          });
+        }
+        const copied = await addFile(
+          path.posix.join('artifacts', artifact.relativePath),
+          source,
+          'artifact',
+          artifact.artifactId
+        );
+        if (copied.sha256 !== artifact.sha256 || copied.sizeBytes !== artifact.sizeBytes) {
+          throw new AppError('ARTIFACT_INVALID', 'target artifact digest does not match its ledger');
+        }
+      }
+      const targetPostsDir = path.join(targetDataDir, 'posts');
+      if (await pathExists(targetPostsDir)) {
+        for (const file of await listFiles(targetPostsDir)) {
+          await addFile(path.posix.join('posts', file.relativePath), file.absolute, 'bundle');
+        }
+      }
+      if (files.length > config.migration.maxFiles) {
+        throw new AppError('MIGRATION_BLOCKED', 'reverse migration package exceeds maxFiles');
+      }
+      const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
+      if (totalBytes > config.migration.maxTotalBytes) {
+        throw new AppError('MIGRATION_BLOCKED', 'reverse migration package exceeds maxTotalBytes');
+      }
+      const collisions = platformPathCollision(files.map((file) => file.path));
+      if (collisions) throw new AppError('MIGRATION_BLOCKED', 'reverse migration package has a path collision');
+      const manifest = {
+        schemaVersion: MIGRATION_SCHEMA_VERSION,
+        kind: 'migration',
+        stateVersion: MIGRATION_STATE_VERSION,
+        migrationId: reverseMigrationId,
+        workspaceId: targetState.workspaceId,
+        sourceInstanceId: targetInstance.instanceId,
+        targetInstanceId: reverseTargetInstanceId,
+        historyEpoch: targetState.historyEpoch,
+        configRevision: deepClone(targetState.configRevision),
+        timeZone: targetState.timeZone || 'Asia/Shanghai',
+        stableAccountRefs: Object.values(targetState.accounts || {}).map((account) => account.accountRef),
+        recoveryRefs: {
+          holds: targetState.recovery?.holds || [],
+          caseId: targetState.recovery?.id || null
+        },
+        createdAt,
+        sealedAt: nowIso(this.now),
+        fileCount: files.length,
+        totalBytes,
+        files,
+        reverseOf: migrationId
+      };
+      manifest.snapshotHash = jcsHash({ manifestWithoutSnapshotHash: manifest, files });
+      await atomicWriteJson(path.join(tempDir, 'manifest.json'), manifest);
+      const receipt = {
+        schemaVersion: 1,
+        kind: 'migration_receipt',
+        migrationId: reverseMigrationId,
+        workspaceId: targetState.workspaceId,
+        sourceInstanceId: targetInstance.instanceId,
+        targetInstanceId: reverseTargetInstanceId,
+        snapshotHash: manifest.snapshotHash,
+        sourceHistoryEpoch: targetState.historyEpoch,
+        cutEventSeq: targetState.eventSeq,
+        releasedAt: nowIso(this.now),
+        releasedBy: humanContext.principal.id
+      };
+      await atomicWriteJson(path.join(tempDir, 'receipt.json'), receipt);
+      await fsp.rm(packageDir, { recursive: true, force: true }).catch(() => {});
+      await fsp.rename(tempDir, packageDir);
+      return {
+        reverseMigrationId,
+        reverseTargetInstanceId,
+        packageDir,
+        manifest,
+        receipt,
+        targetStateHash: jcsHash(targetState),
+        targetHistoryEpoch: targetState.historyEpoch,
+        targetEventSeq: targetState.eventSeq
+      };
+    } catch (error) {
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+
+  async rollback({ migrationId, targetDataDir, to = null }, humanContext) {
+    await this._requireHuman(humanContext, {
+      action: 'migration.rollback',
+      migrationId,
+      targetDataDir,
+      to
+    });
     const state = await this.store.getSnapshot();
     if (state.migration?.id !== migrationId || state.migration.phase !== 'released') {
       throw new AppError('MIGRATION_BLOCKED', 'rollback requires a released source migration');
@@ -781,11 +1044,25 @@ export class MigrationService {
     if (!state.migration.targetDisabled) {
       throw new AppError('MIGRATION_BLOCKED', 'disable-target must succeed before rollback');
     }
-    if (!targetDataDir || !path.isAbsolute(targetDataDir)) {
+    if (typeof targetDataDir !== 'string' || !path.isAbsolute(targetDataDir)) {
       throw new AppError('MIGRATION_BLOCKED', 'target latest ledger location is required for rollback');
     }
-    const targetStateFile = path.join(targetDataDir, 'state.json');
-    const targetInstanceFile = path.join(targetDataDir, 'instance.json');
+    if (typeof to !== 'string' || !path.isAbsolute(to)) {
+      throw new AppError('CONFIG_INVALID', 'rollback destination data directory must be absolute');
+    }
+    const targetDir = path.resolve(targetDataDir);
+    const rollbackDir = path.resolve(to);
+    if (targetDir === rollbackDir) {
+      throw new AppError('MIGRATION_BLOCKED', 'rollback destination must be a new directory, not the disabled target');
+    }
+    if (this.dataDir && (ensureWithin(this.dataDir, rollbackDir) || ensureWithin(rollbackDir, this.dataDir))) {
+      throw new AppError('MIGRATION_BLOCKED', 'rollback destination must be outside the source data directory');
+    }
+    if (ensureWithin(targetDir, rollbackDir) || ensureWithin(rollbackDir, targetDir)) {
+      throw new AppError('MIGRATION_BLOCKED', 'rollback destination must be outside the target data directory');
+    }
+    const targetStateFile = path.join(targetDir, 'state.json');
+    const targetInstanceFile = path.join(targetDir, 'instance.json');
     if (!(await pathExists(targetStateFile)) || !(await pathExists(targetInstanceFile))) {
       throw new AppError('MIGRATION_BLOCKED', 'target latest ledger is unavailable; blocking rollback');
     }
@@ -797,41 +1074,259 @@ export class MigrationService {
     if (targetInstance.status !== 'disabled') {
       throw new AppError('MIGRATION_BLOCKED', 'target must be disabled before reverse handover');
     }
-    const targetStateText = await fsp.readFile(targetStateFile, 'utf8');
-    const targetStateHash = sha256Hex(targetStateText);
-    const reverseMigrationId = `migration_${randomId('r').split('_').at(-1)}`;
-    const result = await this.store.transaction(async (draft, tx) => {
-      draft.migration = {
-        ...draft.migration,
-        rollback: {
+    if (state.workspaceId !== targetState.workspaceId) {
+      throw new AppError('MIGRATION_BLOCKED', 'target workspace does not match the source');
+    }
+    const targetStateHash = jcsHash(targetState);
+    const existingRollback = state.migration.rollback;
+    let prepared = null;
+    if (existingRollback) {
+      if (existingRollback.phase === 'activated') {
+        if (
+          existingRollback.rollbackDataDir === rollbackDir &&
+          existingRollback.targetDataDir === targetDir
+        ) {
+          return {
+            migration: deepClone(state.migration),
+            reverseMigrationId: existingRollback.reverseMigrationId,
+            reverseTargetInstanceId: existingRollback.reverseTargetInstanceId,
+            rollbackDataDir: existingRollback.rollbackDataDir,
+            packageDir: existingRollback.reversePackageDir,
+            targetStateHash: existingRollback.targetStateHash,
+            targetHistoryEpoch: existingRollback.targetHistoryEpoch,
+            targetEventSeq: existingRollback.targetEventSeq,
+            imported: null,
+            validated: null,
+            activated: {
+              migrationId: existingRollback.reverseMigrationId,
+              phase: 'active',
+              targetInstanceId: existingRollback.reverseTargetInstanceId,
+              deduplicated: true
+            },
+            deduplicated: true
+          };
+        }
+        throw new AppError('MIGRATION_BLOCKED', 'rollback was already activated at a different destination');
+      }
+      if (existingRollback.phase !== 'prepared') {
+        throw new AppError('MIGRATION_BLOCKED', `rollback is already ${existingRollback.phase}`);
+      }
+      if (
+        existingRollback.rollbackDataDir !== rollbackDir ||
+        existingRollback.targetDataDir !== targetDir
+      ) {
+        throw new AppError('MIGRATION_BLOCKED', 'a prepared rollback exists for another destination; retry that destination');
+      }
+      if (existingRollback.targetStateHash !== targetStateHash) {
+        throw new AppError('MIGRATION_BLOCKED', 'target ledger changed after the rollback was prepared');
+      }
+      prepared = existingRollback;
+    } else {
+      if (await pathExists(rollbackDir)) {
+        const entries = await fsp.readdir(rollbackDir);
+        if (entries.length > 0) throw new AppError('MIGRATION_BLOCKED', 'rollback destination must be empty');
+      }
+      const reverseMigrationId = `migration_${randomId('r').split('_').at(-1)}`;
+      const reverseTargetInstanceId = `reverse_target_${randomId('i').split('_').at(-1)}`;
+      prepared = await this.store.transaction(async (draft, tx) => {
+        if (draft.migration?.id !== migrationId || draft.migration.phase !== 'released') {
+          throw new AppError('MIGRATION_BLOCKED', 'source migration changed before rollback preparation');
+        }
+        if (draft.migration.rollback) {
+          throw new AppError('MIGRATION_BLOCKED', 'another rollback is already prepared');
+        }
+        const value = {
+          phase: 'prepared',
           reverseMigrationId,
+          reverseTargetInstanceId,
+          rollbackDataDir: rollbackDir,
+          targetDataDir: targetDir,
           targetStateHash,
           targetInstanceId: targetInstance.instanceId,
           targetHistoryEpoch: targetState.historyEpoch,
           targetEventSeq: targetState.eventSeq,
+          preparedAt: nowIso(this.now),
+          reversePackageDir: null,
+          packageSnapshotHash: null
+        };
+        draft.migration = { ...draft.migration, rollback: value };
+        tx.appendEvent({
+          type: 'migration.rollback.prepared',
+          actor: humanContext.principal.id,
+          payload: {
+            migrationId,
+            reverseMigrationId,
+            targetStateHash,
+            targetDataDir: targetDir,
+            rollbackDataDir: rollbackDir
+          }
+        });
+        return deepClone(value);
+      });
+    }
+
+    let built = null;
+    if (
+      prepared.packageSnapshotHash &&
+      prepared.reversePackageDir &&
+      (await pathExists(path.join(prepared.reversePackageDir, 'manifest.json')))
+    ) {
+      const verified = await verifyMigrationPackage(prepared.reversePackageDir);
+      if (
+        verified.manifest.migrationId !== prepared.reverseMigrationId ||
+        verified.manifest.snapshotHash !== prepared.packageSnapshotHash
+      ) {
+        throw new AppError('MIGRATION_BLOCKED', 'prepared reverse package does not match the source record');
+      }
+      const receipt = await readJson(path.join(prepared.reversePackageDir, 'receipt.json'), 'MIGRATION_BLOCKED');
+      built = {
+        reverseMigrationId: prepared.reverseMigrationId,
+        reverseTargetInstanceId: prepared.reverseTargetInstanceId,
+        packageDir: prepared.reversePackageDir,
+        manifest: verified.manifest,
+        receipt,
+        targetStateHash: prepared.targetStateHash,
+        targetHistoryEpoch: prepared.targetHistoryEpoch,
+        targetEventSeq: prepared.targetEventSeq
+      };
+    } else {
+      built = await this._buildReversePackage({
+        migrationId,
+        targetDataDir: targetDir,
+        reverseMigrationId: prepared.reverseMigrationId,
+        reverseTargetInstanceId: prepared.reverseTargetInstanceId,
+        targetState,
+        targetInstance,
+        humanContext
+      });
+      prepared = await this.store.transaction(async (draft) => {
+        const current = draft.migration?.rollback;
+        if (!current || current.reverseMigrationId !== prepared.reverseMigrationId || current.phase !== 'prepared') {
+          throw new AppError('MIGRATION_BLOCKED', 'rollback preparation changed before package publication');
+        }
+        draft.migration.rollback = {
+          ...current,
+          reversePackageDir: built.packageDir,
+          packageSnapshotHash: built.manifest.snapshotHash
+        };
+        return deepClone(draft.migration.rollback);
+      });
+    }
+
+    let imported = null;
+    let validated = null;
+    let activated = null;
+    const rollbackStateFile = path.join(rollbackDir, 'state.json');
+    const rollbackInstanceFile = path.join(rollbackDir, 'instance.json');
+    if (await pathExists(rollbackStateFile)) {
+      const rollbackState = await readJson(rollbackStateFile);
+      const rollbackInstance = await readJson(rollbackInstanceFile);
+      if (
+        rollbackState.migration?.id !== prepared.reverseMigrationId ||
+        rollbackInstance.intendedTargetInstanceId !== prepared.reverseTargetInstanceId
+      ) {
+        throw new AppError('MIGRATION_BLOCKED', 'rollback destination contains a different reverse migration');
+      }
+      validated = {
+        migrationId: prepared.reverseMigrationId,
+        phase: rollbackState.migration.phase,
+        targetInstanceId: rollbackInstance.instanceId
+      };
+      if (rollbackInstance.status === 'active') {
+        activated = {
+          migrationId: prepared.reverseMigrationId,
+          phase: 'active',
+          targetInstanceId: rollbackInstance.instanceId,
+          capabilities: rollbackInstance.allowedCapabilities || [],
+          deduplicated: true
+        };
+      } else if (rollbackInstance.status === 'validated') {
+        activated = await this._activate({
+          migrationId: prepared.reverseMigrationId,
+          receipt: built.receipt,
+          dataDir: rollbackDir
+        });
+      } else if (rollbackState.migration.phase === 'imported' && rollbackInstance.status === 'paused') {
+        validated = await this.validate({ migrationId: prepared.reverseMigrationId, dataDir: rollbackDir });
+        activated = await this._activate({
+          migrationId: prepared.reverseMigrationId,
+          receipt: built.receipt,
+          dataDir: rollbackDir
+        });
+      } else {
+        throw new AppError('MIGRATION_BLOCKED', 'rollback destination is in an unsupported partial state');
+      }
+    } else {
+      if (await pathExists(rollbackDir)) {
+        const entries = await fsp.readdir(rollbackDir);
+        if (entries.length > 0) throw new AppError('MIGRATION_BLOCKED', 'rollback destination has unowned partial data');
+      }
+      try {
+        imported = await this._importPackage({ from: built.packageDir, dataDir: rollbackDir });
+        validated = await this.validate({ migrationId: prepared.reverseMigrationId, dataDir: rollbackDir });
+        activated = await this._activate({
+          migrationId: prepared.reverseMigrationId,
+          receipt: built.receipt,
+          dataDir: rollbackDir
+        });
+      } catch (error) {
+        throw new AppError(error.code || 'MIGRATION_BLOCKED', `reverse migration failed: ${error.message}`, {
+          cause: error,
+          details: {
+            reverseMigrationId: prepared.reverseMigrationId,
+            packageDir: built.packageDir,
+            rollbackDir
+          }
+        });
+      }
+    }
+    await this.hooks.afterReverseActivated?.({ migrationId, prepared, built, rollbackDir, activated });
+    const result = await this.store.transaction(async (draft, tx) => {
+      const current = draft.migration?.rollback;
+      if (!current || current.reverseMigrationId !== prepared.reverseMigrationId) {
+        throw new AppError('MIGRATION_BLOCKED', 'rollback preparation disappeared before activation commit');
+      }
+      draft.migration = {
+        ...draft.migration,
+        rollback: {
+          ...current,
+          reverseTargetInstanceId: activated.targetInstanceId,
+          reversePackageDir: built.packageDir,
+          rollbackDataDir: rollbackDir,
+          targetStateHash: built.targetStateHash,
+          targetInstanceId: targetInstance.instanceId,
+          targetHistoryEpoch: built.targetHistoryEpoch,
+          targetEventSeq: built.targetEventSeq,
+          packageSnapshotHash: built.manifest.snapshotHash,
           rolledBackAt: nowIso(this.now),
-          phase: 'imported'
+          phase: 'activated'
         }
       };
       tx.appendEvent({
-        type: 'migration.rollback.prepared',
+        type: 'migration.rollback.activated',
         actor: humanContext.principal.id,
         payload: {
           migrationId,
-          reverseMigrationId,
-          targetStateHash,
-          targetEventSeq: targetState.eventSeq
+          reverseMigrationId: prepared.reverseMigrationId,
+          reverseTargetInstanceId: activated.targetInstanceId,
+          rollbackDataDir: rollbackDir,
+          packageSnapshotHash: built.manifest.snapshotHash
         }
       });
       return deepClone(draft.migration);
     });
     return {
       migration: result,
-      reverseMigrationId,
-      targetStateHash,
-      targetHistoryEpoch: targetState.historyEpoch,
-      targetEventSeq: targetState.eventSeq,
-      note: 'reverse handover records the target latest ledger; source activation requires a separate validated import/activate cycle'
+      reverseMigrationId: prepared.reverseMigrationId,
+      reverseTargetInstanceId: activated.targetInstanceId,
+      rollbackDataDir: rollbackDir,
+      packageDir: built.packageDir,
+      targetStateHash: built.targetStateHash,
+      targetHistoryEpoch: built.targetHistoryEpoch,
+      targetEventSeq: built.targetEventSeq,
+      imported,
+      validated,
+      activated
     };
   }
 }

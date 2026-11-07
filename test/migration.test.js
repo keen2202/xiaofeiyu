@@ -72,7 +72,7 @@ async function createUnsettledState(harness) {
   return waiting;
 }
 
-async function fullFlow() {
+async function fullFlow({ activate = true } = {}) {
   const source = await setupSource();
   const waiting = await createUnsettledState(source.harness);
   await source.diary.generate({
@@ -132,19 +132,22 @@ async function fullFlow() {
     source.harness.humanContext
   );
   assert.equal(validated.phase, 'validated');
-  const activated = await targetMigration.activate(
-    {
-      migrationId: prepared.migration.id,
-      receipt: released.receipt,
-      dataDir: targetDir
-    },
-    source.harness.humanContext
-  );
-  assert.equal(activated.phase, 'active');
+  let activated = null;
+  if (activate) {
+    activated = await targetMigration.activate(
+      {
+        migrationId: prepared.migration.id,
+        receipt: released.receipt,
+        dataDir: targetDir
+      },
+      source.harness.humanContext
+    );
+    assert.equal(activated.phase, 'active');
+  }
   const targetState = JSON.parse(await fs.readFile(path.join(targetDir, 'state.json'), 'utf8'));
   const targetInstance = JSON.parse(await fs.readFile(path.join(targetDir, 'instance.json'), 'utf8'));
   assert.equal(targetState.historyEpoch, sourceState.historyEpoch);
-  assert.equal(targetInstance.status, 'active');
+  assert.equal(targetInstance.status, activate ? 'active' : 'validated');
   assert.equal(targetInstance.allowedCapabilities.includes('platform:bilibili'), false);
   assert.equal(targetState.tasks[waiting.id].holds.some((hold) => hold.kind === 'migration'), true);
   assert.equal(targetState.outbox.old_notification.status, 'suppressed');
@@ -152,7 +155,7 @@ async function fullFlow() {
   assert.ok(await fs.readFile(path.join(targetDir, 'artifacts', targetArtifact.relativePath)));
   const targetDiary = Object.values(targetState.diaries)[0];
   assert.ok(await fs.readFile(path.join(targetDir, 'diary', targetDiary.targetFile)));
-  return { source, waiting, exported, released, targetDir };
+  return { source, waiting, exported, released, targetDir, targetMigration, imported, validated, activated };
 }
 
 test('prepare/export/release/import/validate/activate preserves ledger, artifacts and holds', async () => {
@@ -289,5 +292,275 @@ test('crash before seal leaves the source quiescing and a retry can export', asy
     assert.equal(retried.phase, 'sealed');
   } finally {
     await source.harness.cleanup();
+  }
+});
+
+test('disable-target requires a reachable target and rollback performs a reverse import/activate', async () => {
+  const flow = await fullFlow();
+  let rollbackDir = null;
+  try {
+    const migrationId = flow.released.migration.id;
+    await assert.rejects(
+      () => flow.source.migration.disableTarget({ migrationId, targetDataDir: null, targetStopped: true, targetStopEvidence: 'test:target-stopped' }, flow.source.harness.humanContext),
+      (error) => error.code === 'MIGRATION_BLOCKED'
+    );
+    await assert.rejects(
+      () => flow.source.migration.disableTarget(
+        { migrationId, targetDataDir: flow.targetDir, targetStopped: false, targetStopEvidence: 'test:target-stopped' },
+        flow.source.harness.humanContext
+      ),
+      (error) => error.code === 'MIGRATION_BLOCKED'
+    );
+    await assert.rejects(
+      () => flow.source.migration.disableTarget(
+        { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: '' },
+        flow.source.harness.humanContext
+      ),
+      (error) => error.code === 'MIGRATION_BLOCKED'
+    );
+    await assert.rejects(
+      () => flow.source.migration.disableTarget(
+        { migrationId, targetDataDir: path.join(os.tmpdir(), 'xfy-target-does-not-exist'), targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+        flow.source.harness.humanContext
+      ),
+      (error) => error.code === 'MIGRATION_BLOCKED'
+    );
+    assert.equal((await flow.source.harness.snapshot()).migration.targetDisabled, undefined);
+    const disabled = await flow.source.migration.disableTarget(
+      { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+      flow.source.harness.humanContext
+    );
+    assert.equal(disabled.targetDisabled, true);
+    const targetInstance = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'instance.json'), 'utf8'));
+    assert.equal(targetInstance.status, 'disabled');
+    assert.deepEqual(targetInstance.allowedCapabilities, []);
+
+    rollbackDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-rollback-'));
+    await fs.rm(rollbackDir, { recursive: true, force: true });
+    const rolledBack = await flow.source.migration.rollback(
+      { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+      flow.source.harness.humanContext
+    );
+    assert.equal(rolledBack.activated.phase, 'active');
+    assert.equal(rolledBack.imported.phase, 'imported');
+    assert.equal(rolledBack.validated.phase, 'validated');
+    const reverseInstance = JSON.parse(await fs.readFile(path.join(rollbackDir, 'instance.json'), 'utf8'));
+    const reverseState = JSON.parse(await fs.readFile(path.join(rollbackDir, 'state.json'), 'utf8'));
+    assert.equal(reverseInstance.status, 'active');
+    assert.equal(reverseState.migration.id, rolledBack.reverseMigrationId);
+    assert.equal(reverseState.historyEpoch, rolledBack.targetHistoryEpoch);
+    assert.equal(reverseState.workspaceId, (await flow.source.harness.snapshot()).workspaceId);
+    const reverseHolds = reverseState.tasks[flow.waiting.id].holds.filter((hold) => hold.kind === 'migration');
+    assert.equal(reverseHolds.length, 1);
+    assert.equal(reverseHolds[0].id, `hold_migration_${flow.waiting.id}`);
+    const sourceState = await flow.source.harness.snapshot();
+    assert.equal(sourceState.migration.rollback.phase, 'activated');
+    assert.equal(sourceState.migration.rollback.reverseMigrationId, rolledBack.reverseMigrationId);
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    if (rollbackDir) await fs.rm(rollbackDir, { recursive: true, force: true });
+  }
+});
+
+
+test('activate resumes after a crash between instance activation and ledger commit', async () => {
+  const flow = await fullFlow({ activate: false });
+  try {
+    const migrationId = flow.released.migration.id;
+    const crashing = new MigrationService({
+      store: flow.source.harness.store,
+      configService: flow.source.harness.configService,
+      humanProof: flow.source.harness.humanProof,
+      protection: flow.source.harness.protectionProvider,
+      now: flow.source.harness.now,
+      hooks: {
+        beforeActivationCommit() {
+          throw new Error('simulated power cut before ledger commit');
+        }
+      }
+    });
+    await assert.rejects(
+      () => crashing.activate(
+        { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir },
+        flow.source.harness.humanContext
+      ),
+      /simulated power cut/
+    );
+    const crashedState = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'state.json'), 'utf8'));
+    const crashedInstance = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'instance.json'), 'utf8'));
+    assert.equal(crashedInstance.status, 'active');
+    assert.equal(crashedState.migration.phase, 'validated');
+    const retry = new MigrationService({
+      store: flow.source.harness.store,
+      configService: flow.source.harness.configService,
+      humanProof: flow.source.harness.humanProof,
+      protection: flow.source.harness.protectionProvider,
+      now: flow.source.harness.now
+    });
+    const activated = await retry.activate(
+      { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir },
+      flow.source.harness.humanContext
+    );
+    assert.equal(activated.phase, 'active');
+    const state = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'state.json'), 'utf8'));
+    assert.equal(state.migration.phase, 'active');
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+  }
+});
+
+test('rollback can use the imported ledger of a target that was never activated', async () => {
+  const flow = await fullFlow({ activate: false });
+  let rollbackDir = null;
+  try {
+    const migrationId = flow.released.migration.id;
+    await flow.source.migration.disableTarget(
+      { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+      flow.source.harness.humanContext
+    );
+    rollbackDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-rollback-unactivated-'));
+    await fs.rm(rollbackDir, { recursive: true, force: true });
+    const rolledBack = await flow.source.migration.rollback(
+      { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+      flow.source.harness.humanContext
+    );
+    assert.equal(rolledBack.activated.phase, 'active');
+    const reverseState = JSON.parse(await fs.readFile(path.join(rollbackDir, 'state.json'), 'utf8'));
+    assert.equal(reverseState.migration.id, rolledBack.reverseMigrationId);
+    assert.equal(reverseState.eventSeq, rolledBack.targetEventSeq);
+    assert.equal(reverseState.historyEpoch, rolledBack.targetHistoryEpoch);
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    if (rollbackDir) await fs.rm(rollbackDir, { recursive: true, force: true });
+  }
+});
+
+test('reverse rollback rejects a target artifact whose bytes no longer match the ledger', async () => {
+  const flow = await fullFlow();
+  let rollbackDir = null;
+  try {
+    const migrationId = flow.released.migration.id;
+    await flow.source.migration.disableTarget(
+      { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+      flow.source.harness.humanContext
+    );
+    const targetState = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'state.json'), 'utf8'));
+    const artifact = Object.values(targetState.artifacts)[0];
+    const artifactFile = path.join(flow.targetDir, 'artifacts', artifact.relativePath);
+    await fs.chmod(artifactFile, 0o644);
+    await fs.writeFile(artifactFile, 'corrupted bytes');
+    rollbackDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-rollback-corrupt-'));
+    await fs.rm(rollbackDir, { recursive: true, force: true });
+    await assert.rejects(
+      () => flow.source.migration.rollback(
+        { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+        flow.source.harness.humanContext
+      ),
+      (error) => ['ARTIFACT_INVALID', 'MIGRATION_BLOCKED'].includes(error.code)
+    );
+    const rollbackState = (await flow.source.harness.snapshot()).migration.rollback;
+    assert.equal(rollbackState.phase, 'prepared');
+    assert.equal(await fs.stat(rollbackDir).catch(() => null), null);
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    if (rollbackDir) await fs.rm(rollbackDir, { recursive: true, force: true });
+  }
+});
+
+test('reverse rollback rejects a target journal segment with a broken digest', async () => {
+  const flow = await fullFlow();
+  let rollbackDir = null;
+  try {
+    const migrationId = flow.released.migration.id;
+    await flow.source.migration.disableTarget(
+      { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+      flow.source.harness.humanContext
+    );
+    const targetState = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'state.json'), 'utf8'));
+    const segment = Object.values(targetState.journalSegments)[0];
+    const segmentFile = path.join(flow.targetDir, 'journal', segment.relativePath);
+    await fs.chmod(segmentFile, 0o644);
+    await fs.writeFile(segmentFile, '{"schemaVersion":1,"historyEpoch":"tampered","events":[]}');
+    rollbackDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-rollback-journal-'));
+    await fs.rm(rollbackDir, { recursive: true, force: true });
+    await assert.rejects(
+      () => flow.source.migration.rollback(
+        { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+        flow.source.harness.humanContext
+      ),
+      (error) => ['JOURNAL_CORRUPTED', 'MIGRATION_BLOCKED'].includes(error.code)
+    );
+    assert.equal((await flow.source.harness.snapshot()).migration.rollback.phase, 'prepared');
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    if (rollbackDir) await fs.rm(rollbackDir, { recursive: true, force: true });
+  }
+});
+
+test('rollback retry records the already-active reverse instance instead of activating a second one', async () => {
+  const flow = await fullFlow();
+  let rollbackDir = null;
+  try {
+    const migrationId = flow.released.migration.id;
+    await flow.source.migration.disableTarget(
+      { migrationId, targetDataDir: flow.targetDir, targetStopped: true, targetStopEvidence: 'test:target-stopped' },
+      flow.source.harness.humanContext
+    );
+    rollbackDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-rollback-retry-'));
+    await fs.rm(rollbackDir, { recursive: true, force: true });
+    const crashing = new MigrationService({
+      store: flow.source.harness.store,
+      configService: flow.source.harness.configService,
+      artifactStore: flow.source.harness.artifactStore,
+      journal: flow.source.harness.journal,
+      humanProof: flow.source.harness.humanProof,
+      protection: flow.source.harness.protectionProvider,
+      executorStatus: async () => ({ stopped: true }),
+      dataDir: flow.source.harness.dir,
+      migrationsDir: flow.source.harness.paths.migrationsDir,
+      journalDir: flow.source.harness.paths.journalDir,
+      diaryDir: flow.source.harness.paths.diaryDir,
+      postsDir: flow.source.harness.paths.postsDir,
+      now: flow.source.harness.now,
+      hooks: {
+        afterReverseActivated() {
+          throw new Error('simulated crash before source rollback commit');
+        }
+      }
+    });
+    await assert.rejects(
+      () => crashing.rollback(
+        { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+        flow.source.harness.humanContext
+      ),
+      /simulated crash/
+    );
+    const firstInstance = JSON.parse(await fs.readFile(path.join(rollbackDir, 'instance.json'), 'utf8'));
+    assert.equal(firstInstance.status, 'active');
+    assert.equal((await flow.source.harness.snapshot()).migration.rollback.phase, 'prepared');
+
+    const retried = await flow.source.migration.rollback(
+      { migrationId, targetDataDir: flow.targetDir, to: rollbackDir },
+      flow.source.harness.humanContext
+    );
+    assert.equal(retried.activated.targetInstanceId, firstInstance.instanceId);
+    assert.equal((await flow.source.harness.snapshot()).migration.rollback.phase, 'activated');
+    assert.equal((await fs.readdir(rollbackDir)).includes('state.json'), true);
+    await assert.rejects(
+      () => flow.source.migration.rollback(
+        { migrationId, targetDataDir: flow.targetDir, to: `${rollbackDir}-other` },
+        flow.source.harness.humanContext
+      ),
+      (error) => error.code === 'MIGRATION_BLOCKED'
+    );
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    if (rollbackDir) await fs.rm(rollbackDir, { recursive: true, force: true });
   }
 });
