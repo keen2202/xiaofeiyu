@@ -150,3 +150,59 @@ test('untrusted HTTP context is rejected', async () => {
     await harness.cleanup();
   }
 });
+
+test('task resume enforces ownership and the kind-specific write scope', async () => {
+  const { harness, command } = await setup();
+  try {
+    const task = await harness.store.transaction(async (draft, tx) =>
+      harness.taskManager.create(tx, {
+        kind: 'comment',
+        principalId: harness.owner.id,
+        accountRef: { platform: 'bilibili', accountId: '1001' },
+        inputHash: 'jcs-sha256-v1:' + '7'.repeat(64)
+      })
+    );
+    const agent = await harness.store.transaction(async (draft, tx) =>
+      harness.identity.create(tx, {
+        kind: 'agent',
+        role: 'assistant',
+        sourceKind: 'agent',
+        scopes: ['task.resume.own', 'comment.draft']
+      })
+    );
+    await assert.rejects(
+      () => command.execute(
+        envelope('task.resume', { taskId: task.id }, 'go', 'resume-other'),
+        agent,
+        { trusted: true }
+      ),
+      (error) => error.code === 'FORBIDDEN'
+    );
+    const scoped = await harness.store.transaction(async (draft, tx) =>
+      harness.identity.create(tx, {
+        kind: 'agent',
+        role: 'assistant',
+        sourceKind: 'agent',
+        scopes: ['task.resume.own']
+      })
+    );
+    const ownTask = await harness.store.transaction(async (draft, tx) =>
+      harness.taskManager.create(tx, {
+        kind: 'comment',
+        principalId: scoped.id,
+        accountRef: { platform: 'bilibili', accountId: '1001' },
+        inputHash: 'jcs-sha256-v1:' + '8'.repeat(64)
+      })
+    );
+    await assert.rejects(
+      () => command.execute(
+        envelope('task.resume', { taskId: ownTask.id }, 'go', 'resume-no-scope'),
+        scoped,
+        { trusted: true }
+      ),
+      (error) => error.code === 'FORBIDDEN'
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});

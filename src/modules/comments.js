@@ -238,6 +238,81 @@ export class CommentsModule {
     };
   }
 
+  async resume({ taskId, mode = 'go', principal }) {
+    if (!['dry', 'go'].includes(mode)) throw new AppError('CONFIG_INVALID', 'mode must be dry or go');
+    if (!principal?.id) throw new AppError('FORBIDDEN', 'resume requires a trusted principal');
+    const config = this.configService.get();
+    if (!config.comments.enabled) throw new AppError('FEATURE_DISABLED', 'comments are disabled');
+    const state = await this.store.getSnapshot();
+    const task = state.tasks[taskId];
+    if (!task) throw new AppError('FORBIDDEN', 'comment task not found');
+    if (task.kind !== 'comment') throw new AppError('INPUT_REQUIRED', 'task is not a comment task');
+    if (!['interrupted', 'failed', 'partial', 'unknown'].includes(task.status)) {
+      throw new AppError('FORBIDDEN', `task status ${task.status} cannot be resumed`);
+    }
+    if (task.executionActive) throw new AppError('OPERATION_UNKNOWN', 'previous comment execution is still active');
+    const unsettled = (task.pendingOperationIds || [])
+      .map((id) => state.operations[id])
+      .filter((operation) => operation && !['confirmed', 'not_sent', 'failed', 'cancelled'].includes(operation.status));
+    const unknown = (task.operationIds || [])
+      .map((id) => state.operations[id])
+      .filter((operation) => operation?.status === 'unknown');
+    if (unknown.length > 0 || unsettled.length > 0) {
+      throw new AppError('OPERATION_UNKNOWN', 'unknown comment operations must be resolved with evidence before resume');
+    }
+    const effective = effectiveDryRun({ config, feature: 'comments', invocationMode: mode });
+    if (effective.dryRun) {
+      return {
+        task: deepClone(task),
+        dryRun: true,
+        executionMode: 'dry',
+        blockedBy: effective.blockedBy,
+        plan: { action: 'comment.resume', taskId }
+      };
+    }
+    const challenge = await this.store.transaction(async (draft, tx) => {
+      const current = draft.tasks[taskId];
+      if (!['interrupted', 'failed', 'partial', 'unknown'].includes(current.status)) {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'task status changed during resume');
+      }
+      this.taskManager.resume(tx, current, {
+        manual: true,
+        verified: true,
+        actor: principal.id,
+        reason: 'human verified old comment attempt stopped'
+      });
+      this.taskManager.transition(tx, current, 'waiting_approval', {
+        actor: principal.id,
+        reason: 'comment resume requires fresh approval'
+      });
+      const created = this.approvalService.create(tx, {
+        task: current,
+        action: 'comment.send',
+        inputHash: current.inputHash,
+        principalId: principal.id,
+        ttlSec: this.approvalTtlSec,
+        source: principal.sourceKind
+      });
+      current.input.approvalId = created.approval.id;
+      tx.appendEvent({
+        type: 'comment.resume.requested',
+        actor: principal.id,
+        taskId,
+        accountRef: current.accountRef,
+        payload: { approvalId: created.approval.id, previousStatus: task.status }
+      });
+      return created;
+    });
+    return {
+      task: (await this.store.getSnapshot()).tasks[taskId],
+      approval: challenge.approval,
+      nonce: challenge.nonce,
+      expiresAt: challenge.expiresAt,
+      executionMode: 'go',
+      resumed: true
+    };
+  }
+
   async send({ taskId, mode = 'go', principal = null }) {
     if (!['dry', 'go'].includes(mode)) throw new AppError('CONFIG_INVALID', 'mode must be dry or go');
     const config = this.configService.get();

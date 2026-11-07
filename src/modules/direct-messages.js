@@ -65,7 +65,8 @@ export class DirectMessagesModule {
     mode = 'go',
     principal,
     trigger = 'manual',
-    parentTaskId = null
+    parentTaskId = null,
+    resumeTaskId = null
   }) {
     if (!['dry', 'go'].includes(mode)) throw new AppError('CONFIG_INVALID', 'mode must be dry or go');
     const config = this.configService.get();
@@ -118,6 +119,15 @@ export class DirectMessagesModule {
       feeCapMinor: 0
     });
     if (effective.dryRun) {
+      if (resumeTaskId) {
+        return {
+          task: deepClone((await this.store.getSnapshot()).tasks[resumeTaskId]),
+          dryRun: true,
+          executionMode: 'dry',
+          blockedBy: effective.blockedBy,
+          plan: { action: 'dm.resume', taskId: resumeTaskId, recipientMid: recipient }
+        };
+      }
       const task = await this.store.transaction(async (draft, tx) => {
         assertWritablePhase(draft);
         const created = this.taskManager.create(tx, {
@@ -154,6 +164,13 @@ export class DirectMessagesModule {
     }
 
     const state = await this.store.getSnapshot();
+    if (resumeTaskId) {
+      const existing = state.tasks[resumeTaskId];
+      if (!existing || existing.kind !== 'dm') throw new AppError('INPUT_REQUIRED', 'task is not a DM task');
+      if (existing.inputHash !== inputHash) {
+        throw new AppError('INPUT_REQUIRED', 'DM resume input does not match the original task');
+      }
+    }
     this._checkTargetCooldown(state, targetKey, config);
     const reusable = [];
     for (const key of [primaryKey, targetKey]) {
@@ -167,6 +184,28 @@ export class DirectMessagesModule {
 
     const task = await this.store.transaction(async (draft, tx) => {
       assertWritablePhase(draft);
+      if (resumeTaskId) {
+        const current = draft.tasks[resumeTaskId];
+        if (!current || current.kind !== 'dm') throw new AppError('INPUT_REQUIRED', 'task is not a DM task');
+        if (current.status === 'unknown' && (current.pendingOperationIds || []).length > 0) {
+          throw new AppError('OPERATION_UNKNOWN', 'unknown DM operation must be resolved before resume');
+        }
+        this.taskManager.resume(tx, current, {
+          manual: true,
+          verified: true,
+          actor: principal.id,
+          reason: 'human verified old DM attempt stopped'
+        });
+        current.cancelRequestedAt = null;
+        tx.appendEvent({
+          type: 'dm.resume.requested',
+          actor: principal.id,
+          taskId: current.id,
+          accountRef: current.accountRef,
+          payload: { attempts: current.attempts, previousStatus: current.history.at(-2)?.from || null }
+        });
+        return deepClone(current);
+      }
       const created = this.taskManager.create(tx, {
         kind: 'dm',
         principalId: principal.id,
@@ -264,6 +303,42 @@ export class DirectMessagesModule {
       executionMode: 'go',
       receipt: outcome.operation.receipt || null
     };
+  }
+
+  async resume({ taskId, mode = 'go', principal }) {
+    if (!['dry', 'go'].includes(mode)) throw new AppError('CONFIG_INVALID', 'mode must be dry or go');
+    if (!principal?.id) throw new AppError('FORBIDDEN', 'resume requires a trusted principal');
+    const config = this.configService.get();
+    if (!config.directMessages.enabled) throw new AppError('FEATURE_DISABLED', 'direct messages are disabled');
+    const state = await this.store.getSnapshot();
+    const task = state.tasks[taskId];
+    if (!task) throw new AppError('FORBIDDEN', 'DM task not found');
+    if (task.kind !== 'dm') throw new AppError('INPUT_REQUIRED', 'task is not a DM task');
+    if (!['interrupted', 'failed', 'partial', 'unknown'].includes(task.status)) {
+      throw new AppError('FORBIDDEN', `task status ${task.status} cannot be resumed`);
+    }
+    if (task.executionActive) throw new AppError('OPERATION_UNKNOWN', 'previous DM execution is still active');
+    const unknown = (task.operationIds || [])
+      .map((id) => state.operations[id])
+      .filter((operation) => operation?.status === 'unknown');
+    const pending = (task.pendingOperationIds || [])
+      .map((id) => state.operations[id])
+      .filter((operation) => operation && !['confirmed', 'not_sent', 'failed', 'cancelled'].includes(operation.status));
+    if (unknown.length > 0 || pending.length > 0) {
+      throw new AppError('OPERATION_UNKNOWN', 'unknown DM operations must be resolved with evidence before resume');
+    }
+    return this.send({
+      content: task.input.contentRef
+        ? { contentRef: task.input.contentRef, title: task.input.title, platformData: task.input.platformData }
+        : null,
+      recipientMid: task.input.recipientMid,
+      text: task.input.text,
+      mode,
+      principal,
+      trigger: task.trigger,
+      parentTaskId: task.parentTaskId,
+      resumeTaskId: task.id
+    });
   }
 }
 

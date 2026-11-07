@@ -332,13 +332,31 @@ export class CommandService {
         return { executionMode: 'dry', result: task };
       }
       case 'task.resume': {
-        const production = this.services.production;
-        if (!production) throw new AppError('CAPABILITY_UNSUPPORTED', 'resume service is unavailable');
-        return production.resume({
-          taskId: request.input.taskId,
-          mode: request.mode,
-          principal
-        });
+        const task = await this.getTask(request.input.taskId, principal);
+        const kindScope = {
+          production: 'production.create',
+          comment: 'comment.draft',
+          dm: 'dm.send'
+        }[task.kind];
+        if (!kindScope) throw new AppError('CAPABILITY_UNSUPPORTED', `task kind ${task.kind} has no resume path`);
+        this.identity.authorize(principal, kindScope);
+        if (task.kind === 'production') {
+          if (!this.services.production) throw new AppError('CAPABILITY_UNSUPPORTED', 'resume service is unavailable');
+          return this.services.production.resume({
+            taskId: task.id,
+            mode: request.mode,
+            principal
+          });
+        }
+        if (task.kind === 'comment') {
+          if (!this.services.comments) throw new AppError('CAPABILITY_UNSUPPORTED', 'comment service is unavailable');
+          return this.services.comments.resume({ taskId: task.id, mode: request.mode, principal });
+        }
+        if (task.kind === 'dm') {
+          if (!this.services.directMessages) throw new AppError('CAPABILITY_UNSUPPORTED', 'DM service is unavailable');
+          return this.services.directMessages.resume({ taskId: task.id, mode: request.mode, principal });
+        }
+        throw new AppError('CAPABILITY_UNSUPPORTED', `task kind ${task.kind} has no resume path`);
       }
       case 'config.update': {
         if (!this.services.configService) throw new AppError('CAPABILITY_UNSUPPORTED', 'config service is unavailable');

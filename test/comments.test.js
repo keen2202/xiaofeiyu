@@ -169,3 +169,65 @@ test('self comments, max length and duplicate @owner are rejected', async () => 
     await harness.cleanup();
   }
 });
+
+test('human resume of a rejected comment creates a fresh approval and sends only once', async () => {
+  const { harness, adapter, comments } = await setup();
+  try {
+    const draft = await comments.createDraft({
+      candidate: mockCandidate('BVresume'),
+      text: 'resume me',
+      principal: harness.owner
+    });
+    await approvalDecide(harness, {
+      approvalId: draft.approval.id,
+      nonce: draft.nonce,
+      decision: 'reject'
+    });
+    assert.equal((await harness.snapshot()).tasks[draft.task.id].status, 'failed');
+    const resumed = await comments.resume({
+      taskId: draft.task.id,
+      mode: 'go',
+      principal: harness.owner
+    });
+    assert.equal(resumed.task.status, 'waiting_approval');
+    assert.ok(resumed.approval.id);
+    assert.notEqual(resumed.approval.id, draft.approval.id);
+    assert.equal(adapter.calls.writeComment.length, 0);
+    await approvalDecide(harness, { approvalId: resumed.approval.id, nonce: resumed.nonce });
+    const sent = await comments.send({ taskId: draft.task.id, mode: 'go', principal: harness.owner });
+    assert.equal(sent.operation.status, 'confirmed');
+    assert.equal(sent.task.status, 'succeeded');
+    assert.equal(adapter.calls.writeComment.length, 1);
+    const state = await harness.snapshot();
+    assert.equal(Object.keys(state.tasks).length, 1);
+    assert.equal(state.tasks[draft.task.id].attempts, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('comment resume refuses an unresolved unknown operation', async () => {
+  const { harness, comments } = await setup({
+    adapterOverrides: {
+      async writeComment() {
+        throw new Error('timeout');
+      }
+    }
+  });
+  try {
+    const draft = await comments.createDraft({
+      candidate: mockCandidate('BVunknown'),
+      text: 'unknown resume',
+      principal: harness.owner
+    });
+    await approvalDecide(harness, { approvalId: draft.approval.id, nonce: draft.nonce });
+    const sent = await comments.send({ taskId: draft.task.id, mode: 'go', principal: harness.owner });
+    assert.equal(sent.operation.status, 'unknown');
+    await assert.rejects(
+      () => comments.resume({ taskId: draft.task.id, mode: 'go', principal: harness.owner }),
+      (error) => error.code === 'OPERATION_UNKNOWN'
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
