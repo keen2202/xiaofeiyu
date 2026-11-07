@@ -872,3 +872,68 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 ### 9.8 明确不做
 
 不引入向量数据库、嵌入服务或外部记忆 SaaS；不做跨插件/跨项目共享记忆、人格养成或情绪状态机；不把记忆当作授权、审批凭据或事实权威；不在本轮把 §9 记忆机制写入 DESIGN/SPEC，不修改 config/代码，仅修正规划文本内部术语与跨文档同步状态。
+
+## 10. 实施记录（2026-11-07，本工作区）
+
+> 本节记录本轮代码实施与验证结果，不修改 §1 的 GATE-0/GATE-MEM 原始审核结论。用户在本轮明确要求按 0.2.1-draft 实施；该指令被视为本工作区的代码实施授权，但不构成真实 B 站写入、真实 IM、外部发布器、媒体工具执行或备份目的地/故障域授权。真实外部项仍按原任务表保持 BLOCKED/未实测。
+
+### 10.1 已实现并通过离线验证
+
+| 任务 | 实现范围 | 验证证据 |
+|---|---|---|
+| T02 | v3 账本、instance/bootstrap、跨进程 wx 锁、事务、事件归档、2000 热缓存、pending、Task 状态机、配置/凭据/稳定身份 | `test/store.test.js`、`test/event-journal.test.js`、`test/task-manager.test.js`、`test/config.test.js`、`test/credentials.test.js` |
+| T14 | JCS 散列、请求幂等、主体/ACL、ApprovalService、RateLimiter、EffectGateway、Recovery scope、能力注册 | `test/contracts.test.js`、`test/identity.test.js`、`test/approval.test.js`、`test/command-service.test.js`、`test/effect-gateway.test.js`、`test/rate-limiter.test.js` |
+| T03 | WBI、nav/whoami/popular/search/view/subtitle/comments/relation、评论/DM 写入与回执、Cookie 域名隔离、熔断 | `test/bilibili.test.js`、`test/bilibili-adapter.test.js`（全部 Mock fetch，无真实 B 站请求） |
+| T04 | 可选 OpenAI 兼容 AgentClient、环境变量 Key、不可信素材围栏、JSON 校验 | `test/agent.test.js`；商业 Provider 的正式执行接线仍属可选/未实测 |
+| T05 | Browse 去重、自有/已看/冷却过滤、确定性评分、失败隔离、只读约束 | `test/browse.test.js` |
+| T06 | 评论草稿/审批/auto、目标/正文防重、冷却、额度、unknown 原 Operation | `test/comments.test.js` |
+| T07 | 白名单 DM、互关预检、自发/批量拒绝、独立额度/冷却、摘要事件 | `test/direct-messages.test.js` |
+| T08 | scope 日记、归档重建、>2000 事件、双阶段提交与崩溃恢复、私有 ACL | `test/diary.test.js` |
+| T09 | Artifact 投稿、Manual Bundle、人工补录、External execFile/回执/原 Operation unknown 核查 | `test/publisher.test.js` |
+| T10 | Coordinator、HTTP/CLI 适配、信任栅栏、错误码/HTTP 映射、工具白名单、Cordis 静态入口 | `test/coordinator.test.js`、`test/dsh.test.js`、`test/cli.test.js` |
+| T15 | 不可变 Artifact、流式 hash、链接/越界/超限拒绝、pendingImport 恢复、受控导出 | `test/artifact-store.test.js` |
+| T16.1 | 受信 IM envelope、四元防重、绑定/撤权、outbox、delivery.query、unknown 不重发 | `test/im-contract.test.js`、`test/outbox.test.js` |
+| T17.1 | 固定 Runner、无 shell 参数数组、有界 JSONL、单并发、取消仅请求、环境白名单 | `test/local-execution.test.js`、`test/execution-recovery.test.js` |
+| T17.2 | 固定 script/assets/voice/render/validate、审批、dry、checkpoint、真实 ffmpeg/ffprobe 验证、readyForPublish | `test/production.test.js`、`test/local-slideshow.test.js`、`test/production-budget.test.js` |
+| T17.3 | 真实本地 MP4/封面验收：图片+片段+音轨+字幕、合法无配音、缺工具 BLOCKED | `test/manual/local-production.acceptance.mjs`，本机 ffmpeg/ffprobe 6.1.1，0 失败 |
+| T18 | prepare/export/release/import/validate/activate、路径/摘要/链接校验、源退役、目标暂停、旧任务 hold、abort | `test/migration.test.js`、`test/migration-paths.test.js`（双根目录模拟） |
+| T20 | BackupPolicy、一致 cut、ledger/full、manifest/sourceStateHash/snapshotHash、verify、保留底线、保护健康 | `test/backup.test.js`、`test/backup-policy.test.js`、`test/backup-retention.test.js`、`test/backup-fence.test.js` |
+| T21 | 只读恢复、新 epoch、RecoveryCase/Hold/UnknownExposure、reconcile、两阶段 authorize、旧权限失效 | `test/recovery.test.js`、`test/recovery-gates.test.js`、`test/history-epoch.test.js` |
+| T22 | 灾备集成：cut 后已外发/丢账不重复外发、hold 独立于 instance 投影、保护状态变化与在途回执 | `test/disaster-recovery.integration.test.js`、`test/recovery-gates.test.js` |
+| T19 | 轻量启动/status 零网络、无 spawn、无媒体探测、X/remote 明确不支持 | `test/lite-loading.test.js`、`test/dependency-preflight.test.js`、`test/safety-matrix.test.js` |
+
+### 10.2 本轮验证结果
+
+- `npm run check`：87 个源/测试/脚本文件语法检查通过。
+- `npm test`：44 个自动测试文件，**189 项通过 / 0 失败**，无 skip；全部使用临时目录与 Mock/替身，不访问真实平台、不发真实 IM、不写真实用户数据目录。
+- `npm run test:coverage`：行覆盖 77.83%、分支 61.77%、函数 70.98%（189 项通过）。
+- `node test/manual/local-production.acceptance.mjs`：0 失败；真实 ffmpeg/ffprobe 6.1.1；图片+片段+音轨+字幕输出 640×360/25fps/3.5s MP4 与可读封面；无配音输出 480×270/20fps/3s MP4，voice 为带证据的合法 skipped；缺工具返回 BLOCKED。
+- 所有真实媒体产物仅写入隔离临时目录；未提交用户素材、凭据、真实数据目录或未脱敏证据。
+
+### 10.3 未完成、受限或需要确认的事项
+
+1. **GATE-0/GATE-MEM 原文档状态未改写**：本次实施由用户直接指令触发；真实环境验收、真实外发和记忆规划仍需按原门禁另行审核。
+2. **真实 B 站写入 / External 发布 / 真实 IM**：未提供账号、消息、宿主或发布器授权，保持 BLOCKED/未实测；相关测试全部为 Mock/契约测试。
+3. **T17.3 的人类证明**：真实验收使用注入的测试 human verifier 驱动审批，仅证明本地媒体链路；生产环境必须使用 TTY/宿主人类证明。
+4. **T18/T21 完整回滚与操作证据修复**：正常迁移双向目录流程、activate 断电重试、路径安全已验证；`migration rollback` 目前记录“目标最新账本反向交接”，未执行完整反向 import/activate；`recovery reconcile` 对原 Operation 的修复委托给本地 `operation resolve`，而不是自动伪造回执。
+5. **T20 定时备份/每日复查**：BackupPolicy、手动 create/verify/prune、保护健康已实现；未启动 15 分钟调度器、每日自动复查、restoreTested 演练记录。
+6. **T22 真实故障域/物理介质/跨 OS**：仅完成临时目录故障注入与双目录迁移；真实磁盘损坏、异地介质、Windows/Linux 跨 OS 未实测。
+7. **付费 Provider**：预算预留、human 审批、`providerRefs.text` 调用、confirmed/unknown 结算与冻结已通过 Mock Provider 验证；真实商业生图/TTS/模型服务未接入，仍为可选契约。
+8. **DSH 真实宿主 API**：`src/index.js` 提供薄 `apply` 契约（webServer/tools/lifecycle 可选注册），未获得可核验的 DSH 宿主服务注册/人类证明/消息语义证据；真实宿主接入仍属未实测。
+9. **Exec 细节**：本地执行使用固定参数数组的 `spawn`（等价于无 shell 的 execFile 语义），未使用 `execFile` API 名称；已限制输出、环境、并发与工作目录。
+10. **示例配置**：`config.example.json` 保持原样，不包含 BackupPolicy；BackupPolicy 仍由 owner 写入 `<dataDir>/backup-policy.json`。`package.json` 版本更新为 0.2.1，Cordis 静态入口补充 `exports`/`httpPrefix`。
+11. **恢复后的日记**：恢复副本会把日记索引标记 `needsRebuild`，避免把缺失正文伪装成已恢复；但日记重建当前只读取恢复后的新 epoch，父恢复点归档事实尚未自动并入新分支日记（旧归档仍在，供人工核查）。
+12. **任务 resume/证据修复范围**：已实现生产 Task 的新审批 resume、Operation/outbox 本地人工 resolve、迁移 activate 断电重试；评论/DM 的通用 resume、`recovery reconcile` 对原 Operation 的自动修复，以及 authorize 每一步写入点的完整断点续办仍按受限项报告，不宣称已完成。
+13. **恢复与迁移失败清理**：迁移 import 失败会清空新目标；restore/activate 的部分写入点与恢复 restore 的部分复制失败仍需人工清除目标目录后重试，尚未实现所有阶段的全自动回滚。
+
+### 10.4 任务覆盖核对（逐项）
+
+- **T00/T01**：历史研究/文档项保持原状态；本次未改写其审核性质。
+- **T02～T10、T14～T18、T20～T22 的离线代码项**：均已有实现与测试证据（见 10.1）；其中 T18/T20/T21/T22 的完整验收仍受 10.3 的外部/故障域限制。
+- **T11**：`npm run check`、`npm test`、`npm run test:coverage` 已全量通过；尚未安排独立只读代码审查，也未完成 T17.3（已通过本机隔离验收，但真实人类证明仍待环境）之外的全部门槛，因此不标记为完整 DONE。
+- **T12.1/T12.2/T12.3**：真实 IM、真实 B 站/External、真实跨 OS 均无授权或环境，保持 **BLOCKED/未实测**；离线 Mock 不替代。
+- **T13**：本节即本轮分项交付记录；外部项按 10.3 单列，不宣称全功能交付。
+- **T16.2**：真实 dsh-im 宿主能力探测未获得可核验宿主证据，保持 **BLOCKED**；T16.1 契约完成不等于真实 IM 完成。
+- **T17.3**：本机真实 ffmpeg/ffprobe 离线验收通过，但测试使用注入的测试 human verifier；生产人类证明机制仍需环境验证。
+- **T19/T22**：轻量、依赖预检、临时目录故障注入与双目录迁移已覆盖；物理介质/独立故障域/跨 OS 与真实宿主组合仍未实测。
+- **GATE-MEM / TASKS §9 记忆规划**：未审核、未实现、未占用 FR/D/R 编号；不把任何记忆能力计入本次交付。
