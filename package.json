@@ -1,0 +1,44 @@
+{
+  "name": "dsh-bili-unified",
+  "version": "0.1.0",
+  "description": "Unified, conservative Bilibili automation plugin for DeepSeek Harness",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/coordinator.js",
+    "./config": "./src/config.js",
+    "./bilibili": "./src/bilibili.js"
+  },
+  "bin": {
+    "dsh-bili-unified": "./cli.mjs"
+  },
+  "files": [
+    "src",
+    "cli.mjs",
+    "config.example.json",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "check": "node --check src/index.js && node --check cli.mjs",
+    "test": "node --test --test-reporter=spec",
+    "test:coverage": "node --test --experimental-test-coverage"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

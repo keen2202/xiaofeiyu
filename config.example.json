@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "dataDir": "",
+  "credentialsFile": "",
+  "dryRun": true,
+  "timeZone": "Asia/Shanghai",
+  "platforms": { "enabled": ["bilibili"] },
+  "owner": { "mid": 0, "name": "" },
+  "scheduler": {
+    "enabled": false,
+    "tickSeconds": 30,
+    "browseIntervalMinutes": 360,
+    "diaryTime": "23:00"
+  },
+  "browse": {
+    "enabled": false,
+    "sources": ["popular", "search"],
+    "keywords": [],
+    "perRound": 3,
+    "candidatePool": 30,
+    "minSubtitleChars": 80,
+    "minScore": 20,
+    "maxDurationSec": 3600,
+    "markWatchHistory": false
+  },
+  "comments": {
+    "enabled": false,
+    "mode": "approval",
+    "perRound": 1,
+    "dailyLimit": 3,
+    "sameVideoDays": 7,
+    "maxLength": 300,
+    "mentionOwner": false,
+    "allowTemplate": false
+  },
+  "directMessages": {
+    "enabled": false,
+    "allowedRecipientMids": [],
+    "requireMutual": true,
+    "perRound": 1,
+    "dailyLimit": 3,
+    "sameVideoDays": 7,
+    "maxLength": 300
+  },
+  "diary": {
+    "enabled": false,
+    "afterBrowse": true,
+    "daily": true,
+    "publicBook": true,
+    "privateBook": false,
+    "directory": ""
+  },
+  "im": {
+    "enabled": false,
+    "adapterId": "dsh-im",
+    "maxMessageAgeSec": 600,
+    "approvalTtlSec": 600,
+    "groupReplies": "summary",
+    "notifications": {
+      "enabled": false,
+      "minGapMs": 1500,
+      "perMinute": 20
+    }
+  },
+  "artifacts": {
+    "directory": "",
+    "maxImportBytes": 8589934592
+  },
+  "production": {
+    "enabled": false,
+    "dryRun": true,
+    "backend": "local",
+    "profileId": "local-slideshow-v1",
+    "profilesFile": "",
+    "requireApproval": true,
+    "maxConcurrent": 1,
+    "workDir": "",
+    "limits": {
+      "wallTimeSec": 1800,
+      "maxPaidCostMinor": 0,
+      "currency": "CNY",
+      "maxOutputBytes": 1073741824
+    }
+  },
+  "migration": {
+    "mode": "offline",
+    "directory": "",
+    "maxFiles": 100000,
+    "maxTotalBytes": 68719476736
+  },
+  "publishing": {
+    "enabled": false,
+    "provider": "manual",
+    "dryRun": true,
+    "autoPublish": false,
+    "requireApproval": true,
+    "outputDir": "",
+    "external": {
+      "command": "",
+      "args": [],
+      "timeoutMs": 600000,
+      "successJson": true
+    }
+  },
+  "agent": {
+    "enabled": false,
+    "baseUrl": "https://api.deepseek.com/v1",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "model": "deepseek-chat",
+    "timeoutMs": 60000,
+    "persona": ""
+  },
+  "rateLimit": {
+    "minGapMs": 1500,
+    "writeGapMs": 120000,
+    "readPerHour": 600,
+    "readPerDay": 3000,
+    "writePerHour": 12,
+    "writePerDay": 30,
+    "requestTimeoutMs": 30000,
+    "circuitBaseMs": 300000,
+    "circuitMaxMs": 1800000
+  },
+  "security": {
+    "allowExternalPublisher": false,
+    "allowLocalProducer": false,
+    "maxUploadBytes": 8589934592,
+    "allowedVideoExtensions": [".mp4", ".flv", ".mov"],
+    "allowedSourceDirs": []
+  }
+}

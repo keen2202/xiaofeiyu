@@ -1,0 +1,5 @@
+- insert:
+  - id: dsh-bili-unified
+    name: dsh-bili-unified
+    config:
+      enabled: true
