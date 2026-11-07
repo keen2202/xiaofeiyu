@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { AppError } from './src/errors.js';
 import { createRuntime, HTTP_PREFIX } from './src/index.js';
 import { loadConfigFile, redactConfig } from './src/config.js';
-import { RecoveryService } from './src/backup-recovery.js';
+import { BackupPolicyService, BackupService, RecoveryService } from './src/backup-recovery.js';
 import { HumanProofService, TtyHumanVerifier } from './src/identity.js';
 import { jcsHash } from './src/utils.js';
 
@@ -131,7 +131,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         'node cli.mjs outbox resolve <id> confirmed|not_sent --receipt <json> --note <note> --confirm',
         'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm',
         'node cli.mjs migration <prepare|export|release|import|validate|activate|status|abort|disable-target|rollback> ...',
-        'node cli.mjs backup <policy|create|verify|status|prune> ...',
+        '  disable-target <id> --target-data-dir <dir> --target-stopped --target-stop-evidence <text> --confirm; rollback <id> --target-data-dir <dir> --to <empty-dir> --confirm',
+        'node cli.mjs backup <policy|create|verify|status|record-restore|prune> ...',
+        '  record-restore <backup-id> --recovery <id> --target-instance <id> --new-epoch <epoch> --confirm',
         'node cli.mjs recovery <restore|inspect|reconcile|authorize> ...',
         '',
         'Global: --data-dir <dir> --config <file>. Sensitive actions require an interactive TTY.',
@@ -154,13 +156,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     if (flags.confirm !== true && flags.go !== true) throw new CliUsageError('migration import requires --confirm');
     const verifier = new TtyHumanVerifier();
     const proofService = new HumanProofService({ verifier });
-    const binding = { action: 'migration.import', from: flags.from, dataDir: flags['data-dir'] || flags.to };
+    const from = path.resolve(flags.from);
+    const dataDir = path.resolve(flags['data-dir'] || flags.to);
+    const binding = { action: 'migration.import', from, dataDir };
     const principal = syntheticLocalOwner();
     const proof = await promptProofWithVerifier(verifier, binding);
     const { MigrationService } = await import('./src/migration.js');
     const service = new MigrationService({ humanProof: proofService });
     print(stdout, await service.importPackage(
-      { from: path.resolve(flags.from), dataDir: path.resolve(flags['data-dir'] || flags.to) },
+      { from, dataDir },
       { principal, proof }
     ));
     return 0;
@@ -169,15 +173,40 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     if (flags.confirm !== true) throw new CliUsageError('recovery restore requires --confirm');
     const verifier = new TtyHumanVerifier();
     const proofService = new HumanProofService({ verifier });
-    const binding = { action: 'recovery.restore', from: flags.from, to: flags.to };
+    const from = path.resolve(flags.from);
+    const to = path.resolve(flags.to);
+    const requestId = flags.request || `cli-${Date.now()}`;
+    const binding = { action: 'recovery.restore', requestId, from, to };
     const principal = syntheticLocalOwner();
     const proof = await promptProofWithVerifier(verifier, binding);
+    let restoreRecorder = null;
+    if (flags['data-dir']) {
+      const sourceDataDir = path.resolve(flags['data-dir']);
+      const policyFile = path.join(sourceDataDir, 'backup-policy.json');
+      try {
+        await fsp.access(policyFile);
+        const policyService = new BackupPolicyService({
+          file: policyFile,
+          dataDir: sourceDataDir,
+          now: () => new Date()
+        });
+        const indexService = new BackupService({
+          policyService,
+          now: () => new Date(),
+          logger: { warn: () => {} }
+        });
+        restoreRecorder = (info) => indexService.noteRestoreTest(info);
+      } catch {
+        restoreRecorder = null;
+      }
+    }
     const standalone = new RecoveryService({
-      recoveryDir: path.join(path.resolve(flags.to), 'recovery'),
-      humanProof: proofService
+      recoveryDir: path.join(to, 'recovery'),
+      humanProof: proofService,
+      restoreRecorder
     });
     print(stdout, await standalone.restore(
-      { from: flags.from, to: flags.to, requestId: flags.request || `cli-${Date.now()}` },
+      { from, to, requestId },
       { principal, proof }
     ));
     return 0;
@@ -352,7 +381,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         print(stdout, await runtime.production.resume({ taskId: command[2], mode, principal: context.principal }));
         return 0;
       }
-      throw new AppError('CAPABILITY_UNSUPPORTED', 'only production tasks have an implemented resume path');
+      if (task.kind === 'comment') {
+        print(stdout, await runtime.comments.resume({ taskId: command[2], mode, principal: context.principal }));
+        return 0;
+      }
+      if (task.kind === 'dm') {
+        print(stdout, await runtime.directMessages.resume({ taskId: command[2], mode, principal: context.principal }));
+        return 0;
+      }
+      throw new AppError('CAPABILITY_UNSUPPORTED', `task kind ${task.kind} has no resume path`);
     }
     if (command[0] === 'operation' && command[1] === 'resolve') {
       const operationId = command[2];
@@ -405,7 +442,23 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         print(stdout, await runtime.migration.status());
         return 0;
       }
-      const context = await humanContext(runtime, { action: `migration.${sub}`, migrationId }, { verifyNow: false });
+      const activateReceipt = sub === 'activate' ? await readJsonArg(flags.receipt) : null;
+      const context = await humanContext(
+        runtime,
+        sub === 'rollback'
+          ? {
+              action: 'migration.rollback',
+              migrationId,
+              targetDataDir: flags['target-data-dir'] || null,
+              to: flags.to || null
+            }
+          : sub === 'prepare'
+            ? { action: 'migration.prepare', targetInstanceId: flags.target }
+            : sub === 'activate'
+              ? { action: 'migration.activate', migrationId, snapshotHash: activateReceipt?.snapshotHash }
+              : { action: `migration.${sub}`, migrationId },
+        { verifyNow: false }
+      );
       if (sub === 'prepare') {
         print(stdout, await runtime.migration.prepare({ targetInstanceId: flags.target }, context));
       } else if (sub === 'export') {
@@ -417,14 +470,24 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       } else if (sub === 'validate') {
         print(stdout, await runtime.migration.validate({ migrationId, dataDir: path.resolve(flags['data-dir']) }, context));
       } else if (sub === 'activate') {
-        const receipt = await readJsonArg(flags.receipt);
-        print(stdout, await runtime.migration.activate({ migrationId, receipt, dataDir: path.resolve(flags['data-dir']) }, context));
+        print(stdout, await runtime.migration.activate(
+          { migrationId, receipt: activateReceipt, dataDir: path.resolve(flags['data-dir']) },
+          context
+        ));
       } else if (sub === 'abort') {
         print(stdout, await runtime.migration.abort({ migrationId }, context));
       } else if (sub === 'disable-target') {
-        print(stdout, await runtime.migration.disableTarget({ migrationId, targetDataDir: flags['target-data-dir'] || null }, context));
+        print(stdout, await runtime.migration.disableTarget(
+          {
+            migrationId,
+            targetDataDir: flags['target-data-dir'] || null,
+            targetStopped: flags['target-stopped'] === true,
+            targetStopEvidence: flags['target-stop-evidence'] || null
+          },
+          context
+        ));
       } else if (sub === 'rollback') {
-        print(stdout, await runtime.migration.rollback({ migrationId, targetDataDir: flags['target-data-dir'] }, context));
+        print(stdout, await runtime.migration.rollback({ migrationId, targetDataDir: flags['target-data-dir'], to: flags.to || null }, context));
       } else {
         throw new CliUsageError('unknown migration subcommand');
       }
@@ -433,7 +496,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     if (command[0] === 'backup') {
       const sub = command[1];
       if (sub === 'status') {
-        print(stdout, await runtime.backupService.status());
+        print(stdout, {
+          service: await runtime.backupService.status(),
+          scheduler: await runtime.backupScheduler.status()
+        });
         return 0;
       }
       if (sub === 'verify') {
@@ -447,13 +513,33 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         print(stdout, await runtime.policyService.save(policy));
         return 0;
       }
-      if (sub === 'create') {
-        if (flags.confirm !== true) throw new CliUsageError('backup create requires --confirm');
-        const context = await humanContext(runtime, { action: 'backup.create', kind: flags.kind || 'ledger' });
-        print(stdout, await runtime.backupService.create(
-          { kind: flags.kind || 'ledger', requestId: flags.request || `cli-${Date.now()}` },
+      if (sub === 'record-restore') {
+        if (flags.confirm !== true || !command[2]) {
+          throw new CliUsageError('backup record-restore <backup-id> --recovery <id> --target-instance <id> --new-epoch <epoch> --confirm');
+        }
+        const context = await humanContext(
+          runtime,
+          { action: 'backup.record-restore', backupId: command[2], recoveryId: flags.recovery },
+          { verifyNow: true }
+        );
+        print(stdout, await runtime.backupService.recordRestoreTest(
+          {
+            backupId: command[2],
+            recoveryId: flags.recovery,
+            targetInstanceId: flags['target-instance'] || null,
+            newHistoryEpoch: flags['new-epoch'] || null,
+            restoredAt: flags['restored-at'] || null
+          },
           context
         ));
+        return 0;
+      }
+      if (sub === 'create') {
+        if (flags.confirm !== true) throw new CliUsageError('backup create requires --confirm');
+        const kind = flags.kind || 'ledger';
+        const requestId = flags.request || `cli-${Date.now()}`;
+        const context = await humanContext(runtime, { action: 'backup.create', kind, requestId });
+        print(stdout, await runtime.backupService.create({ kind, requestId }, context));
         return 0;
       }
       if (sub === 'prune') {
@@ -480,16 +566,27 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       if (sub === 'reconcile') {
         if (flags.confirm !== true) throw new CliUsageError('recovery reconcile requires --confirm');
         const evidence = await readJsonArg(flags.evidence);
-        const context = await humanContext(runtime, { action: 'recovery.reconcile', evidenceHash: jcsHash(evidence) });
-        print(stdout, await runtime.recovery.reconcile({ recoveryId: flags.id || command[2], evidence }, context));
+        const recoveryId = flags.id || command[2] || null;
+        const context = await humanContext(runtime, {
+          action: 'recovery.reconcile',
+          recoveryId,
+          evidenceHash: jcsHash(evidence)
+        });
+        print(stdout, await runtime.recovery.reconcile({ recoveryId, evidence }, context));
         return 0;
       }
       if (sub === 'authorize') {
         if (flags.confirm !== true) throw new CliUsageError('recovery authorize requires --confirm');
         const scope = JSON.parse(flags.scope);
-        const context = await humanContext(runtime, { action: 'recovery.authorize', scope });
+        const recoveryId = flags.id || command[2] || null;
+        const context = await humanContext(runtime, {
+          action: 'recovery.authorize',
+          recoveryId,
+          scope: jcsHash(scope),
+          evidenceId: flags.evidence || null
+        });
         print(stdout, await runtime.recovery.authorize(
-          { recoveryId: flags.id || command[2], scope, evidenceId: flags.evidence },
+          { recoveryId, scope, evidenceId: flags.evidence },
           context
         ));
         return 0;
