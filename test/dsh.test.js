@@ -72,13 +72,27 @@ test('HTTP config is owner-only, redacted and cannot change privileged fields', 
     assert.equal(forbidden.status, 403);
     const config = await runtime.http(request(owner, { url: '/config' }));
     assert.equal(config.status, 200);
-    const patch = await runtime.http(
+    const revision = (await runtime.store.getSnapshot()).configRevision.version;
+    const missingRevision = await runtime.http(
       request(owner, { method: 'PATCH', url: '/config', body: { patch: { browse: { enabled: true } } } })
+    );
+    assert.equal(missingRevision.status, 400);
+    assert.equal(missingRevision.body.code, 'INPUT_REQUIRED');
+    const patch = await runtime.http(
+      request(owner, {
+        method: 'PATCH',
+        url: '/config',
+        body: { patch: { browse: { enabled: true } }, expectedRevision: revision }
+      })
     );
     assert.equal(patch.status, 200);
     assert.equal(patch.body.browse.enabled, true);
     const privileged = await runtime.http(
-      request(owner, { method: 'PATCH', url: '/config', body: { patch: { timeZone: 'UTC' } } })
+      request(owner, {
+        method: 'PATCH',
+        url: '/config',
+        body: { patch: { timeZone: 'UTC' }, expectedRevision: revision + 1 }
+      })
     );
     assert.equal(privileged.status, 403);
     const nonOwnerPatch = await runtime.http(
@@ -127,6 +141,7 @@ test('cordis patch declares the required plugin identity and HTTP prefix', async
   assert.match(text, /id:\s*dsh-bili-unified/);
   assert.match(text, /name:\s*dsh-bili-unified/);
   assert.match(text, /enabled:\s*true/);
+  assert.match(text, /schemaVersion:\s*1/);
   assert.match(text, /exports:\s*dsh-bili-unified/);
   assert.match(text, /httpPrefix:\s*\/dsh-bili-unified\/api/);
   assert.equal(plugin.name, 'dsh-bili-unified');

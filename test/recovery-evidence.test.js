@@ -110,6 +110,56 @@ async function restoreForTest(setup, backupId, targetDir) {
   return { store, gateway, recovery, restored };
 }
 
+// FR-DR-006/008: close the uncertainty range and record the repair/verification
+// preconditions that authorize now requires.
+async function recordIsolationAndPreconditions({ recovery, store }, setup, scope) {
+  const state = await store.getSnapshot();
+  const inspected = await recovery.inspect(state.recovery.id);
+  const startAt = inspected.uncertaintyRange?.startAt || new Date().toISOString();
+  const capturedAt = new Date(Date.parse(startAt) + 60_000).toISOString();
+  const isolation = await recovery.reconcile(
+    {
+      recoveryId: state.recovery.id,
+      evidence: {
+        kind: 'isolation',
+        source: 'owner:storage-isolation',
+        sourceHash: 'sha256:' + 'f'.repeat(64),
+        conclusion: 'isolated',
+        capturedAt,
+        scope
+      }
+    },
+    setup.harness.humanContext
+  );
+  const preconditions = await recovery.reconcile(
+    {
+      recoveryId: state.recovery.id,
+      evidence: {
+        kind: 'fact',
+        source: 'owner:repair-review',
+        sourceHash: 'sha256:' + '9'.repeat(64),
+        conclusion: 'recorded',
+        scope,
+        coveredRange: { startAt, endAt: capturedAt },
+        preconditions: {
+          permanentKeysRepaired: true,
+          budgetRepaired: true,
+          accountsReverified: [
+            {
+              platform: scope.platform || accountRef.platform,
+              accountId: scope.accountId || accountRef.accountId,
+              verifiedAt: capturedAt
+            }
+          ],
+          recoveryPointBackupId: 'backup_new_verified'
+        }
+      }
+    },
+    setup.harness.humanContext
+  );
+  return { isolation, preconditions, startAt, capturedAt };
+}
+
 test('recovery evidence repairs an original unknown operation without inventing a second effect', async () => {
   const setup = await setupBackup();
   const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-evidence-'));
@@ -164,17 +214,10 @@ test('recovery evidence repairs an original unknown operation without inventing 
       const inspected = await recovery.inspect(before.recovery.id);
       assert.equal(inspected.unknownExposures.find((entry) => entry.id === exposure.id).status, 'confirmed');
 
-      const isolation = await recovery.reconcile(
-        {
-          recoveryId: before.recovery.id,
-          evidence: {
-            kind: 'isolation',
-            source: 'owner:storage-isolation',
-            sourceHash: 'sha256:' + 'd'.repeat(64),
-            conclusion: 'isolated'
-          }
-        },
-        setup.harness.humanContext
+      const { isolation } = await recordIsolationAndPreconditions(
+        { recovery, store },
+        setup,
+        { kind: 'workspace', workspaceId: before.workspaceId }
       );
       await recovery.authorize(
         { recoveryId: before.recovery.id, scope, evidenceId: isolation.evidenceId },
@@ -218,18 +261,7 @@ async function prepareAuthorizationCrash(hookName) {
   const commentHold = state.recovery.holds.find(
     (hold) => hold.scope.kind === 'account_action' && hold.scope.action === 'comment'
   );
-  const isolation = await context.recovery.reconcile(
-    {
-      recoveryId: state.recovery.id,
-      evidence: {
-        kind: 'isolation',
-        source: 'owner',
-        sourceHash: 'sha256:' + 'e'.repeat(64),
-        conclusion: 'isolated'
-      }
-    },
-    setup.harness.humanContext
-  );
+  const { isolation } = await recordIsolationAndPreconditions(context, setup, commentHold.scope);
   const { RecoveryService: Service } = await import('../src/backup-recovery.js');
   const crashing = new Service({
     store: context.store,
@@ -259,7 +291,7 @@ test('authorize resumes after a crash between ledger projection and committed ca
   const crash = await prepareAuthorizationCrash('afterStateProjection');
   try {
     const stateAfterCrash = await crash.context.store.getSnapshot();
-    assert.equal(stateAfterCrash.recovery.revision, 3);
+    assert.equal(stateAfterCrash.recovery.revision, 4);
     const committed = await crash.context.recovery.authorize(
       {
         recoveryId: stateAfterCrash.recovery.id,
@@ -269,10 +301,10 @@ test('authorize resumes after a crash between ledger projection and committed ca
       crash.setup.harness.humanContext
     );
     assert.equal(committed.deduplicated, true);
-    assert.equal(committed.revision, 3);
+    assert.equal(committed.revision, 4);
     const instance = await crash.context.store.getInstance();
     assert.equal(instance.status, 'active');
-    assert.equal(instance.recoveryRevision, 3);
+    assert.equal(instance.recoveryRevision, 4);
     const inspected = await crash.context.recovery.inspect(stateAfterCrash.recovery.id);
     assert.equal(inspected.projectionConsistent, true);
     assert.equal(inspected.decisions.length, 1);
@@ -365,6 +397,12 @@ test('a reserved operation at the cut is ambiguous, cannot dispatch, and can be 
             scope: { kind: 'account_action', workspaceId: state.workspaceId, ...accountRef, action: 'comment' },
             operationRefs: [reserved.operation.id],
             businessKeys: [businessKey],
+            source: 'owner:platform-log-review',
+            sourceHash: 'sha256:' + '7'.repeat(64),
+            coveredRange: {
+              startAt: state.recovery.uncertaintyRange.startAt,
+              endAt: new Date(Date.parse(state.recovery.uncertaintyRange.startAt) + 60_000).toISOString()
+            },
             conclusion: 'not_sent',
             note: 'platform log shows no comment',
             repair: { operationId: reserved.operation.id, decision: 'not_sent', note: 'platform log shows no comment' }

@@ -21,7 +21,9 @@
     "minSubtitleChars": 80,
     "minScore": 20,
     "maxDurationSec": 3600,
-    "markWatchHistory": false
+    "markWatchHistory": false,
+    "failureCooldownMinutes": 360,
+    "allowNoSubtitle": false
   },
   "comments": {
     "enabled": false,

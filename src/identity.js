@@ -9,17 +9,20 @@ import {
 } from './utils.js';
 
 export const PRINCIPAL_KINDS = Object.freeze(['human', 'agent', 'service', 'system']);
+// FR-IM-003 whitelist: production draft/dry-run, own task query, cancel and
+// trusted human approval only. task.resume.own is deliberately not an IM
+// binding scope: local/host human entries own the resume capability.
 export const IM_SCOPES = Object.freeze([
   'production.create',
   'task.read.own',
   'task.cancel.own',
-  'task.resume.own',
   'approval.decide.own',
   'comment.draft'
 ]);
 
 export const KNOWN_SCOPES = Object.freeze([
   ...IM_SCOPES,
+  'task.resume.own',
   'browse.run',
   'diary.read.own',
   'diary.generate.own',
@@ -62,14 +65,27 @@ export class IdentityService {
     this.now = now;
   }
 
-  ensureLocalOwner(tx, { displayName = 'local owner' } = {}) {
-    const existing = Object.values(tx.state.principals).find(
-      (principal) =>
+  /**
+   * Pure read-only lookup of the local owner principal (no store write).
+   * Used by CLI status so a status read never mutates the ledger (FIX_PLAN I11).
+   */
+  findLocalOwner(state) {
+    for (const principal of Object.values(state?.principals || {})) {
+      if (
+        principal &&
         principal.kind === 'human' &&
         principal.role === 'owner' &&
         principal.sourceKind === 'local_cli' &&
         !principal.revokedAt
-    );
+      ) {
+        return principal;
+      }
+    }
+    return null;
+  }
+
+  ensureLocalOwner(tx, { displayName = 'local owner' } = {}) {
+    const existing = this.findLocalOwner(tx.state);
     if (existing) return existing;
     const principal = makePrincipal({
       kind: 'human',

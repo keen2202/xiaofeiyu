@@ -10,3 +10,8 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local audit / sandbox scratch (not part of the deliverable)
+.audit-tmp/
+.acl-recovery/
+.test-tmp-*/

@@ -23,8 +23,11 @@ if (files.length === 0) {
 const args = ['--test', '--test-reporter=spec'];
 if (coverage) args.push('--experimental-test-coverage');
 args.push(...files);
-const child = spawn(process.execPath, args, { cwd: root, stdio: 'inherit' });
+// A private writable temp root avoids restricted Windows sandbox TEMP ACLs.
+const tempRoot = fs.mkdtempSync(path.join(root, '.test-tmp-'));
+const child = spawn(process.execPath, args, { cwd: root, stdio: 'inherit', env: { ...process.env, TEMP: tempRoot, TMP: tempRoot, TMPDIR: tempRoot } });
 child.on('exit', (code, signal) => {
+  fs.rmSync(tempRoot, { recursive: true, force: true });
   if (signal) process.kill(process.pid, signal);
   else process.exitCode = code ?? 1;
 });

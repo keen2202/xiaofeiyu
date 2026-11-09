@@ -11,6 +11,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const MAX_TOOL_OUTPUT = 8 * 1024 * 1024;
+// SPEC FR-PRO-005: a single protocol message is bounded to 1MiB.
+const MAX_REQUEST_BYTES = 1024 * 1024;
 
 function emit(event) {
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -248,8 +250,8 @@ async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
     input += chunk;
-    if (input.length > 4 * 1024 * 1024) {
-      fail('INPUT_REQUIRED', 'request exceeds 4MiB');
+    if (Buffer.byteLength(input) > MAX_REQUEST_BYTES) {
+      fail('INPUT_REQUIRED', 'request exceeds 1MiB');
       return;
     }
   }
@@ -260,22 +262,18 @@ async function main() {
     fail('INPUT_REQUIRED', 'request is not valid JSON');
     return;
   }
-  const {
-    executionId,
-    taskId,
-    stageId,
-    attempt = 1,
-    profile,
-    tools = {},
-    workDir,
-    plan
-  } = request;
+  const { executionId, taskId, stageId, attempt = 1, profile, tools = {}, workDir, plan } = request;
+  const { workspaceId, requestId, instanceId, restartSafe = null } = request;
   if (request.schemaVersion !== 1) {
     fail('SCHEMA_UNSUPPORTED', 'schemaVersion must be 1');
     return;
   }
   if (!executionId || !taskId || !stageId) {
     fail('INPUT_REQUIRED', 'executionId/taskId/stageId are required');
+    return;
+  }
+  if (!requestId || !workspaceId || !instanceId) {
+    fail('INPUT_REQUIRED', 'requestId/workspaceId/instanceId are required');
     return;
   }
   if (!['render', 'validate'].includes(stageId)) {

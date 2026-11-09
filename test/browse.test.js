@@ -92,7 +92,7 @@ test('single detail failure is isolated and a no-subtitle candidate is skipped',
   }
 });
 
-test('discovery failure marks the whole round failed without leaking a write', async () => {
+test('discovery failure marks the round partial without leaking a write (M-P2-3: Task and result.status agree)', async () => {
   const { harness, adapter, browse } = await setup({});
   adapter.discover = async () => {
     throw Object.assign(new Error('popular down'), { code: 'BILI_API_ERROR' });
@@ -100,8 +100,11 @@ test('discovery failure marks the whole round failed without leaking a write', a
   try {
     const task = await browse.createTask({ principal: harness.owner });
     const result = await browse.run({ taskId: task.id, principal: harness.owner });
-    assert.equal(result.task.status, 'failed');
+    // Design change (M-P2-3/§11.3): a discovery failure is a failed round
+    // within a successful task lifecycle, so both fields report partial.
+    assert.equal(result.task.status, 'partial');
     assert.equal(result.result.status, 'partial');
+    assert.equal(result.task.result.discoveryError.code, 'BILI_API_ERROR');
     assert.equal(adapter.calls.writeComment.length, 0);
   } finally {
     await harness.cleanup();

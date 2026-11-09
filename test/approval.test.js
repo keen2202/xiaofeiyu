@@ -135,3 +135,159 @@ test('wrong human proof fails closed', async () => {
     await harness.cleanup();
   }
 });
+
+async function approvedTask(harness) {
+  const { task, challenge } = await waitingTask(harness);
+  await harness.approvalService.decide(
+    { approvalId: challenge.approval.id, decision: 'approve', nonce: challenge.nonce, mode: 'go' },
+    harness.humanContext
+  );
+  return { task, challenge };
+}
+
+test('decided approvals with invalidation flags are rejected on re-decide and at dispatch', async () => {
+  const harness = await createHarness();
+  try {
+    const { task, challenge } = await approvedTask(harness);
+    const decidedAt = new Date().toISOString();
+    const invalidState = {
+      approvals: {
+        invalid_one: {
+          id: 'invalid_one',
+          taskId: task.id,
+          action: 'comment.send',
+          decision: 'approve',
+          decidedAt,
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          inputHash: task.inputHash,
+          usableForAuthorization: false,
+          invalidatedByMigration: true,
+          requiresReverification: true
+        }
+      }
+    };
+    assert.throws(
+      () =>
+        harness.approvalService.assertApproved(invalidState, {
+          taskId: task.id,
+          action: 'comment.send',
+          inputHash: task.inputHash
+        }),
+      (error) => error.code === 'APPROVAL_STALE' && /invalidated/.test(error.message)
+    );
+    await harness.store.transaction(async (draft) => {
+      draft.approvals[challenge.approval.id].usableForAuthorization = false;
+      draft.approvals[challenge.approval.id].invalidatedByMigration = true;
+    });
+    // The decided challenge recorded in the ledger is rejected at dispatch time.
+    const afterFlags = await harness.snapshot();
+    assert.throws(
+      () =>
+        harness.approvalService.assertApproved(
+          { approvals: { [challenge.approval.id]: afterFlags.approvals[challenge.approval.id] } },
+          { taskId: task.id, action: 'comment.send', inputHash: task.inputHash }
+        ),
+      (error) => error.code === 'APPROVAL_STALE'
+    );
+    // A pending challenge invalidated by migration cannot be decided either.
+    const second = await waitingTask(harness);
+    await harness.store.transaction(async (draft) => {
+      draft.approvals[second.challenge.approval.id].invalidatedByMigration = true;
+    });
+    await assert.rejects(
+      () =>
+        harness.approvalService.decide(
+          { approvalId: second.challenge.approval.id, decision: 'approve', nonce: second.challenge.nonce, mode: 'go' },
+          harness.humanContext
+        ),
+      (error) => error.code === 'APPROVAL_STALE' && /invalidated/.test(error.message)
+    );
+    await assert.rejects(
+      () =>
+        harness.approvalService.decide(
+          { approvalId: second.challenge.approval.id, decision: 'approve', nonce: second.challenge.nonce, mode: 'dry' },
+          harness.humanContext
+        ),
+      (error) => error.code === 'APPROVAL_STALE'
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('assertApproved consumes usable approvals and rejects consumed ones', async () => {
+  const harness = await createHarness();
+  try {
+    const { task, challenge } = await approvedTask(harness);
+    const state = await harness.snapshot();
+    const approval = harness.approvalService.assertApproved(state, {
+      taskId: task.id,
+      action: 'comment.send',
+      inputHash: task.inputHash
+    });
+    assert.equal(approval.id, challenge.approval.id);
+    await harness.store.transaction(async (draft, tx) => {
+      harness.approvalService.consume(tx, approval, 'op_1');
+    });
+    const afterConsume = await harness.snapshot();
+    assert.throws(
+      () =>
+        harness.approvalService.assertApproved(afterConsume, {
+          taskId: task.id,
+          action: 'comment.send',
+          inputHash: task.inputHash,
+          operationId: 'op_2'
+        }),
+      (error) => error.code === 'APPROVAL_STALE' && /consumed/.test(error.message)
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('revising task input bumps revision, supersedes challenges and blocks the old decision', async () => {
+  const harness = await createHarness();
+  try {
+    const { task, challenge } = await waitingTask(harness);
+    const revisedHash = 'jcs-sha256-v1:' + '9'.repeat(64);
+    await harness.store.transaction(async (draft, tx) => {
+      harness.taskManager.reviseInput(
+        tx,
+        draft.tasks[task.id],
+        { input: { text: 'revised' }, inputHash: revisedHash },
+        { actor: harness.owner.id }
+      );
+    });
+    const state = await harness.snapshot();
+    assert.equal(state.tasks[task.id].revision, 2);
+    assert.equal(state.tasks[task.id].inputHash, revisedHash);
+    assert.ok(state.approvals[challenge.approval.id].supersededAt);
+    assert.ok(state.approvals[challenge.approval.id].supersededByRevision >= 2);
+    await assert.rejects(
+      () =>
+        harness.approvalService.decide(
+          { approvalId: challenge.approval.id, decision: 'approve', nonce: challenge.nonce, mode: 'go' },
+          harness.humanContext
+        ),
+      (error) => error.code === 'APPROVAL_STALE'
+    );
+    // A challenge created for the new revision is valid again.
+    const fresh = await harness.store.transaction(async (draft, tx) =>
+      harness.approvalService.create(tx, {
+        task: draft.tasks[task.id],
+        action: 'comment.send',
+        inputHash: revisedHash,
+        principalId: harness.owner.id
+      })
+    );
+    assert.equal(fresh.approval.taskRevision, 2);
+    const decided = await harness.approvalService.decide(
+      { approvalId: fresh.approval.id, decision: 'approve', nonce: fresh.nonce, mode: 'go' },
+      harness.humanContext
+    );
+    assert.equal(decided.approval.decision, 'approve');
+  } finally {
+    await harness.cleanup();
+  }
+});
+

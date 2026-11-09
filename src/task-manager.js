@@ -49,6 +49,69 @@ export const TASK_TRANSITIONS = Object.freeze({
 
 const TERMINAL_SETTLED = new Set(['succeeded', 'cancelled']);
 
+/**
+ * Pure field-combination check for one task (SPEC §10.1). Shared by
+ * TaskManager.assertSettledCombination and JsonStore.validateState so an
+ * illegal combination can never be committed to the ledger.
+ */
+export function validateTaskCombination(task) {
+  if (!task || typeof task !== 'object' || Array.isArray(task)) {
+    throw new AppError('STORE_CORRUPTED', 'task record is invalid');
+  }
+  if (!TASK_STATUSES.includes(task.status)) {
+    throw new AppError('STORE_CORRUPTED', 'task status is invalid', {
+      details: { taskId: task.id || null, status: task.status ?? null }
+    });
+  }
+  const fail = () => {
+    throw new AppError('STORE_CORRUPTED', `invalid task field combination for ${task.status}`, {
+      details: {
+        taskId: task.id || null,
+        status: task.status,
+        isSettled: task.isSettled,
+        executionActive: task.executionActive,
+        finishedAt: task.finishedAt ?? null,
+        hasUnknownOperation: task.hasUnknownOperation === true
+      }
+    });
+  };
+  if (task.isSettled === true && task.hasUnknownOperation === true) fail();
+  switch (task.status) {
+    case 'succeeded':
+    case 'cancelled':
+      if (task.executionActive !== false) fail();
+      // A completed task can still be unsettled (finishedAt=null) while a
+      // pending approval or unknown operation blocks settlement (I3); once
+      // settled it must stay inactive.
+      if (task.isSettled === true) break;
+      if (task.finishedAt !== null) fail();
+      break;
+    case 'unknown':
+      if (task.isSettled !== false || task.executionActive !== false || task.finishedAt !== null) fail();
+      break;
+    case 'queued':
+    case 'waiting_approval':
+    case 'awaiting_manual':
+    case 'interrupted':
+      if (task.isSettled !== false || task.executionActive !== false) fail();
+      break;
+    case 'running':
+      if (task.isSettled !== false) fail();
+      break;
+    case 'partial':
+    case 'failed':
+      if (task.isSettled === true) {
+        if (task.executionActive !== false) fail();
+      } else if (task.finishedAt !== null) {
+        fail();
+      }
+      break;
+    default:
+      break;
+  }
+  return true;
+}
+
 export class TaskManager {
   constructor({ store, now = () => new Date() } = {}) {
     this.store = store;
@@ -73,6 +136,7 @@ export class TaskManager {
       status: data.status || 'queued',
       isSettled: false,
       executionActive: false,
+      hasUnknownOperation: false,
       trigger: data.trigger || 'manual',
       sourceKind: data.sourceKind || 'local_cli',
       input: deepClone(data.input || {}),
@@ -116,7 +180,7 @@ export class TaskManager {
     return task;
   }
 
-  assertTransition(task, to, options = {}) {
+  assertTransition(task, to, options = {}, state = null) {
     if (!TASK_STATUSES.includes(to)) {
       throw new AppError('INPUT_REQUIRED', `unknown task status: ${to}`);
     }
@@ -127,8 +191,17 @@ export class TaskManager {
         details: { taskId: task.id, from: task.status, to }
       });
     }
-    if (to === 'cancelled' && task.status === 'running' && options.provenUndispatched !== true) {
-      throw new AppError('OPERATION_UNKNOWN', 'cannot cancel a dispatched task without verified side-effect state');
+    if (to === 'cancelled' && task.status === 'running') {
+      // Never trust a caller-provided "proven undispatched" claim alone: the
+      // ledger itself must show no dispatched Operation for this task.
+      if (state && hasDispatchedOperation(state, task)) {
+        throw new AppError('OPERATION_UNKNOWN', 'cannot cancel a task with a dispatched operation', {
+          details: { taskId: task.id }
+        });
+      }
+      if (options.provenUndispatched !== true) {
+        throw new AppError('OPERATION_UNKNOWN', 'cannot cancel a dispatched task without verified side-effect state');
+      }
     }
     if (task.status === 'waiting_approval' && to === 'running' && options.approved !== true) {
       throw new AppError('APPROVAL_REQUIRED', 'waiting_approval tasks need an approved challenge');
@@ -155,7 +228,7 @@ export class TaskManager {
 
   transition(tx, taskOrId, to, options = {}) {
     const task = typeof taskOrId === 'string' ? this.get(tx, taskOrId) : taskOrId;
-    this.assertTransition(task, to, options);
+    this.assertTransition(task, to, options, tx?.state || null);
     const now = nowIso(this.now);
     const previous = task.status;
     if (previous !== to) {
@@ -192,13 +265,22 @@ export class TaskManager {
     const operations = (task.operationIds || [])
       .map((id) => tx.state.operations[id])
       .filter(Boolean);
-    const pending = (task.pendingOperationIds || []).filter((id) => tx.state.operations[id]);
+    const pendingIds = task.pendingOperationIds || [];
+    const pending = pendingIds.map((id) => tx.state.operations[id]).filter(Boolean);
     const activeHolds = (task.holds || []).filter((hold) => hold.status !== 'released');
     const pendingApprovals = Object.values(tx.state.approvals || {}).filter(
-      (approval) => approval.taskId === task.id && !approval.decidedAt
+      (approval) => approval.taskId === task.id && !approval.decidedAt && !approval.supersededAt
     );
-    const hasUnknown = operations.some((operation) => operation.status === 'unknown') || pending.some((id) => tx.state.operations[id]?.status === 'unknown');
+    const hasUnknown = operations.some((operation) => operation.status === 'unknown');
+    // `hasUnknownOperation` is a durable aggregate used by parent aggregation.
+    // It only follows operations still listed as pending on this task.
+    const hasUnknownOperation = pending.some(
+      (operation) => operation.status === 'unknown' || operation.status === 'dispatching'
+    );
     const hasDispatched = operations.some((operation) => operation.dispatchAt);
+    const noPending = pendingIds.length === 0;
+    const settledable =
+      noPending && !hasUnknown && activeHolds.length === 0 && pendingApprovals.length === 0;
     switch (task.status) {
       case 'queued':
       case 'waiting_approval':
@@ -210,6 +292,7 @@ export class TaskManager {
         break;
       case 'running':
         task.isSettled = false;
+        task.finishedAt = null;
         break;
       case 'unknown':
         task.isSettled = false;
@@ -217,26 +300,25 @@ export class TaskManager {
         task.finishedAt = null;
         break;
       case 'succeeded':
-        task.isSettled = pending.length === 0 && !hasUnknown && activeHolds.length === 0;
+        task.isSettled = settledable;
         if (!task.isSettled) task.finishedAt = null;
+        else task.finishedAt = task.finishedAt || nowIso(this.now);
         break;
       case 'cancelled':
-        task.isSettled = !hasUnknown && pending.length === 0;
+        task.isSettled = noPending && !hasUnknown;
         if (!task.isSettled) task.finishedAt = null;
+        else task.finishedAt = task.finishedAt || nowIso(this.now);
         break;
       case 'partial':
       case 'failed':
-        task.isSettled =
-          pending.length === 0 &&
-          !hasUnknown &&
-          activeHolds.length === 0 &&
-          pendingApprovals.length === 0;
+        task.isSettled = settledable;
         if (!task.isSettled) task.finishedAt = null;
         else task.finishedAt = task.finishedAt || nowIso(this.now);
         break;
       default:
         task.isSettled = false;
     }
+    task.hasUnknownOperation = hasUnknownOperation;
     task.hasDispatchedOperation = hasDispatched;
     if (task.parentTaskId) {
       const parent = tx.state.tasks[task.parentTaskId];
@@ -252,6 +334,12 @@ export class TaskManager {
     const unknown = children.filter((child) => child.status === 'unknown' || child.hasUnknownOperation);
     const failed = children.filter((child) => ['failed', 'partial'].includes(child.status));
     const succeeded = children.filter((child) => child.status === 'succeeded' && child.isSettled);
+    if (parent.result?.unresolvedTaskIds) parent.result.unresolvedTaskIds = unsettled.map((child) => child.id);
+    if (parent.executionActive) {
+      parent.isSettled = false;
+      parent.finishedAt = null;
+      return parent;
+    }
     if (unsettled.length > 0) {
       parent.isSettled = false;
       parent.finishedAt = null;
@@ -262,15 +350,22 @@ export class TaskManager {
       parent.isSettled = false;
       parent.finishedAt = null;
       if (!['unknown'].includes(parent.status)) parent.status = 'unknown';
-    } else if (failed.length > 0 && succeeded.length > 0) {
-      parent.isSettled = true;
-      parent.status = 'partial';
-      parent.finishedAt = parent.finishedAt || nowIso(this.now);
     } else if (failed.length > 0) {
+      // A settled failed/partial child never downgrades a browse round to
+      // `failed`: completed work stays visible as `partial` (M07). Late child
+      // failures after the parent already settled follow the same rule.
       parent.isSettled = true;
-      parent.status = 'failed';
+      parent.status = parent.kind === 'browse' || succeeded.length > 0 ? 'partial' : 'failed';
       parent.finishedAt = parent.finishedAt || nowIso(this.now);
-    } else if (succeeded.length === children.length && parent.status === 'running') {
+    } else if (
+      succeeded.length === children.length &&
+      (parent.status === 'running' ||
+        (parent.kind === 'browse' &&
+          parent.status === 'partial' &&
+          parent.result?.interactions &&
+          !parent.result.interactions.skipped.length &&
+          !parent.result.failed?.length))
+    ) {
       parent.isSettled = true;
       parent.status = 'succeeded';
       parent.finishedAt = parent.finishedAt || nowIso(this.now);
@@ -308,6 +403,47 @@ export class TaskManager {
     return task;
   }
 
+  /**
+   * Revise a task's input under a new revision. Any undecided approval for the
+   * old input is superseded so it can never authorize the revised input
+   * (SPEC §21.1/§22.2, FIX_PLAN I3).
+   */
+  reviseInput(tx, taskOrId, changes = {}, options = {}) {
+    const task = typeof taskOrId === 'string' ? this.get(tx, taskOrId) : taskOrId;
+    if (TERMINAL_SETTLED.has(task.status)) {
+      throw new AppError('FORBIDDEN', 'terminal task input cannot be revised');
+    }
+    if (!changes || typeof changes !== 'object') {
+      throw new AppError('INPUT_REQUIRED', 'revised input payload is required');
+    }
+    const nextInputHash = changes.inputHash !== undefined ? changes.inputHash : task.inputHash;
+    if (typeof nextInputHash !== 'string' || nextInputHash === '') {
+      throw new AppError('INPUT_REQUIRED', 'revised task inputHash is required');
+    }
+    task.input = changes.input !== undefined ? deepClone(changes.input) : task.input;
+    task.inputHash = nextInputHash;
+    task.revision = (task.revision || 1) + 1;
+    const superseded = [];
+    for (const [approvalId, approval] of Object.entries(tx.state.approvals || {})) {
+      if (approval.taskId !== task.id || approval.decidedAt || approval.supersededAt) continue;
+      approval.supersededAt = nowIso(this.now);
+      approval.supersededByRevision = task.revision;
+      superseded.push(approvalId);
+    }
+    tx.appendEvent({
+      type: 'task.input.revised',
+      actor: options.actor || 'system',
+      taskId: task.id,
+      payload: {
+        revision: task.revision,
+        inputHash: task.inputHash,
+        supersededApprovals: superseded
+      }
+    });
+    this.recompute(tx, task);
+    return task;
+  }
+
   resume(tx, taskOrId, options = {}) {
     const task = typeof taskOrId === 'string' ? this.get(tx, taskOrId) : taskOrId;
     if (!['interrupted', 'unknown', 'failed', 'partial', 'waiting_approval'].includes(task.status)) {
@@ -333,8 +469,13 @@ export class TaskManager {
       approved: options.approved !== false,
       executionActive: false
     });
+    // A resumed task is a new input revision: stale approvals can no longer
+    // authorize it and the previous finishedAt must not survive (I3).
+    task.revision = (task.revision || 1) + 1;
+    task.finishedAt = null;
     task.attempts += 1;
     task.cancelRequestedAt = null;
+    this.recompute(tx, task);
     return task;
   }
 
@@ -381,24 +522,23 @@ export class TaskManager {
   }
 
   assertSettledCombination(task) {
-    const valid = {
-      succeeded: () => task.isSettled === true && task.executionActive === false,
-      cancelled: () => task.isSettled === true && task.executionActive === false,
-      unknown: () => task.isSettled === false && task.executionActive === false && task.finishedAt === null,
-      queued: () => task.isSettled === false && task.executionActive === false,
-      waiting_approval: () => task.isSettled === false && task.executionActive === false,
-      awaiting_manual: () => task.isSettled === false && task.executionActive === false,
-      interrupted: () => task.isSettled === false && task.executionActive === false,
-      running: () => task.isSettled === false
-    };
-    const check = valid[task.status];
-    if (check && !check()) {
-      throw new AppError('STORE_CORRUPTED', `invalid task field combination for ${task.status}`, {
-        details: { taskId: task.id, isSettled: task.isSettled, executionActive: task.executionActive }
-      });
-    }
-    return true;
+    return validateTaskCombination(task);
   }
+}
+
+/** Operations linked to a task either directly or through their taskIds list. */
+function linkedOperations(state, task) {
+  const operations = state?.operations || {};
+  const direct = (task.operationIds || []).map((id) => operations[id]).filter(Boolean);
+  const known = new Set(direct.map((operation) => operation.id));
+  const indirect = Object.values(operations).filter(
+    (operation) => !known.has(operation.id) && (operation.taskIds || []).includes(task.id)
+  );
+  return [...direct, ...indirect];
+}
+
+function hasDispatchedOperation(state, task) {
+  return linkedOperations(state, task).some((operation) => Boolean(operation.dispatchAt));
 }
 
 export default TaskManager;

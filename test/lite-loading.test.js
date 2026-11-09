@@ -29,6 +29,14 @@ test('default startup and status do not fetch, spawn or probe media tools', asyn
     assert.equal(status.loginProbe, false);
     assert.equal(status.capabilities, 'declared/cached/unverified');
     assert.equal(fetchCalls, 0);
+    // Optional modules stay unloaded when disabled; no polling timer exists
+    // before runtime.start() and the IM bridge is not constructed.
+    assert.equal(runtime.imBridge, null);
+    assert.equal(runtime.maintenance.timer, null);
+    assert.equal(runtime.coordinator.timer, null);
+    const richStatus = await runtime.status(owner);
+    assert.equal(richStatus.components.im.moduleAvailable, false);
+    assert.equal(richStatus.components.execution.remote.supported, false);
     const workFiles = await fs.readdir(runtime.paths.workDir).catch(() => []);
     assert.deepEqual(workFiles, []);
     const x = await runtime.registry.getPlatform('x', { requireEnabled: false }).catch((error) => error);

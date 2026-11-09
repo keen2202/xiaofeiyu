@@ -15,6 +15,8 @@ import {
   ensureDir,
   ensureWithin,
   fileSha256,
+  getProcessStartMs,
+  isProcessAlive,
   isSafeRelativePath,
   jcsHash,
   nowIso,
@@ -70,6 +72,8 @@ export class MigrationService {
     protection = null,
     executorStatus = async () => ({ stopped: true }),
     activationChecks = null,
+    taskManager = null,
+    diary = null,
     dataDir,
     migrationsDir,
     journalDir,
@@ -87,6 +91,8 @@ export class MigrationService {
     this.protection = protection;
     this.executorStatus = executorStatus;
     this.activationChecks = activationChecks;
+    this.taskManager = taskManager;
+    this.diary = diary;
     this.dataDir = dataDir;
     this.migrationsDir = migrationsDir;
     this.journalDir = journalDir;
@@ -124,7 +130,57 @@ export class MigrationService {
     return result;
   }
 
-  async prepare({ targetInstanceId }, humanContext) {
+  _liveExecutions(state) {
+    const live = [];
+    for (const execution of Object.values(state.executions || {})) {
+      if (!['accepted', 'running', 'cancel_requested'].includes(execution.status)) continue;
+      let ownerAlive = false;
+      if (execution.ownerPid && isProcessAlive(execution.ownerPid)) {
+        const actualStart = getProcessStartMs(execution.ownerPid);
+        const recordedStart = Date.parse(execution.processStartedAt || '');
+        ownerAlive =
+          actualStart === null ||
+          (Number.isFinite(recordedStart) && Math.abs(actualStart - recordedStart) <= 5000);
+      }
+      if (ownerAlive) {
+        live.push({
+          executionId: execution.executionId,
+          taskId: execution.taskId || null,
+          stageId: execution.stageId || null,
+          status: execution.status,
+          ownerPid: execution.ownerPid || null
+        });
+      }
+    }
+    return live;
+  }
+
+  _normalizeExecutorStopEvidence(executorStopEvidence) {
+    if (executorStopEvidence === null || executorStopEvidence === undefined) return null;
+    if (typeof executorStopEvidence === 'string') {
+      const note = executorStopEvidence.trim();
+      return note === '' ? null : { source: 'local_owner', note, at: nowIso(this.now), refs: [] };
+    }
+    if (typeof executorStopEvidence !== 'object') {
+      throw new AppError('CONFIG_INVALID', 'executorStopEvidence must be a string or an object');
+    }
+    const source = typeof executorStopEvidence.source === 'string' ? executorStopEvidence.source.trim() : '';
+    const note = typeof executorStopEvidence.note === 'string' ? executorStopEvidence.note.trim() : '';
+    if (source === '' || note === '') {
+      throw new AppError('CONFIG_INVALID', 'executorStopEvidence requires source and note');
+    }
+    const refs = Array.isArray(executorStopEvidence.refs)
+      ? executorStopEvidence.refs.map((ref) => String(ref)).slice(0, 20)
+      : [];
+    return {
+      source,
+      note,
+      at: executorStopEvidence.at || nowIso(this.now),
+      refs
+    };
+  }
+
+  async prepare({ targetInstanceId, executorStopEvidence = null }, humanContext) {
     await this._requireHuman(humanContext, { action: 'migration.prepare', targetInstanceId });
     if (typeof targetInstanceId !== 'string' || targetInstanceId === '') {
       throw new AppError('CONFIG_INVALID', 'targetInstanceId is required');
@@ -139,6 +195,26 @@ export class MigrationService {
     const protection = await this._requireProtection();
     const migrationId = `migration_${randomId('m').split('_').at(-1)}`;
     const executors = await this.executorStatus();
+    const liveExecutions = this._liveExecutions(state);
+    const unsettledExecutions = Object.values(state.executions || {})
+      .filter((execution) => ['accepted', 'running', 'cancel_requested'].includes(execution.status))
+      .map((execution) => execution.executionId);
+    const stopEvidence = this._normalizeExecutorStopEvidence(executorStopEvidence);
+    if (liveExecutions.length > 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'local execution owners are still alive; stop them before prepare', {
+        details: { liveExecutions }
+      });
+    }
+    if (!executors.stopped || unsettledExecutions.length > 0) {
+      if (!stopEvidence) {
+        throw new AppError(
+          'MIGRATION_BLOCKED',
+          'explicit executorStopEvidence is required before prepare can freeze the source',
+          { details: { executors, unsettledExecutions, requiresExecutorStopEvidence: true } }
+        );
+      }
+    }
+    const stopEvidenceHash = stopEvidence ? sha256Hex(JSON.stringify(stopEvidence)) : null;
     const result = await this.store.transaction(async (draft, tx) => {
       draft.migration = {
         phase: 'quiescing',
@@ -151,7 +227,10 @@ export class MigrationService {
           cutAt: protection.cutAt || null,
           status: protection.status
         },
-        executors
+        executors,
+        unsettledExecutions,
+        executorStopEvidence: stopEvidence,
+        executorStopEvidenceHash: stopEvidenceHash
       };
       tx.appendEvent({
         type: 'migration.prepare',
@@ -160,17 +239,28 @@ export class MigrationService {
           migrationId,
           targetInstanceId,
           phase: 'quiescing',
-          protectionBackupId: protection.backupId || null
+          protectionBackupId: protection.backupId || null,
+          executorStopEvidenceHash: stopEvidenceHash
         }
       });
       return deepClone(draft.migration);
     });
-    if (!executors.stopped) {
-      throw new AppError('MIGRATION_BLOCKED', 'local executors have not provably stopped; export remains blocked', {
-        details: { migrationId, executors }
-      });
-    }
     return { migration: result, sealed: false, protection };
+  }
+
+  _profileDependencies() {
+    let config = null;
+    try {
+      config = this._config();
+    } catch {
+      config = null;
+    }
+    const production = config?.production || {};
+    return {
+      profileId: production.profileId || null,
+      profilesFile: production.profilesFile ? path.basename(production.profilesFile) : null,
+      note: 'local_profile_and_tools_must_be_rebound_and_verified_on_the_target'
+    };
   }
 
   async _packageDir(migrationId) {
@@ -187,13 +277,30 @@ export class MigrationService {
     if (!executors.stopped) {
       throw new AppError('MIGRATION_BLOCKED', 'local executors have not provably stopped', { details: { executors } });
     }
-    if (Object.keys(state.artifactPendingImports || {}).length > 0) {
-      throw new AppError('MIGRATION_BLOCKED', 'artifact imports are still pending');
+    const liveExecutions = this._liveExecutions(state);
+    if (liveExecutions.length > 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'live local execution owners block export', {
+        details: { liveExecutions }
+      });
     }
-    if (Object.values(state.diaries || {}).some((entry) => entry.pendingCommit)) {
-      throw new AppError('MIGRATION_BLOCKED', 'diary commits are still pending');
+    // Complete provable pending multi-file commits before sealing so a package
+    // never silently omits an import that could still be recovered locally.
+    await this.artifactStore?.recoverPendingImports?.().catch((error) => {
+      throw new AppError('MIGRATION_BLOCKED', 'pending artifact imports could not be recovered', { cause: error });
+    });
+    if (typeof this.diary?.recoverPending === 'function') {
+      await this.diary.recoverPending().catch((error) => {
+        throw new AppError('MIGRATION_BLOCKED', 'pending diary commits could not be recovered', { cause: error });
+      });
     }
-    const inFlight = Object.values(state.operations || {}).filter((operation) =>
+    const currentState = await this.store.getSnapshot();
+    if (Object.keys(currentState.artifactPendingImports || {}).length > 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'artifact imports are still pending after recovery');
+    }
+    if (Object.values(currentState.diaries || {}).some((entry) => entry.pendingCommit)) {
+      throw new AppError('MIGRATION_BLOCKED', 'diary commits are still pending after recovery');
+    }
+    const inFlight = Object.values(currentState.operations || {}).filter((operation) =>
       ['reserved', 'dispatching'].includes(operation.status)
     );
     if (inFlight.length > 0) {
@@ -311,9 +418,12 @@ export class MigrationService {
         sourceInstanceId: migration.sourceInstanceId,
         targetInstanceId: migration.targetInstanceId,
         historyEpoch: refreshed.historyEpoch,
+        sourceHistoryEpoch: refreshed.historyEpoch,
+        cutEventSeq: refreshed.eventSeq,
         configRevision: deepClone(refreshed.configRevision),
         timeZone: refreshed.timeZone || 'Asia/Shanghai',
         stableAccountRefs: Object.values(refreshed.accounts || {}).map((account) => account.accountRef),
+        profileDependencies: this._profileDependencies(),
         recoveryRefs: {
           holds: refreshed.recovery?.holds || [],
           caseId: refreshed.recovery?.id || null
@@ -351,7 +461,14 @@ export class MigrationService {
           sealedAt: manifest.sealedAt,
           packageDir: finalDir,
           snapshotHash: manifest.snapshotHash,
-          manifest
+          manifest,
+          sealedPackage: {
+            packageDir: finalDir,
+            snapshotHash: manifest.snapshotHash,
+            cutEventSeq: manifest.cutEventSeq,
+            sourceHistoryEpoch: manifest.sourceHistoryEpoch,
+            sealedAt: manifest.sealedAt
+          }
         };
         tx.appendEvent({
           type: 'migration.sealed',
@@ -374,48 +491,105 @@ export class MigrationService {
     }
   }
 
-  async release({ migrationId }, humanContext) {
-    await this._requireHuman(humanContext, { action: 'migration.release', migrationId });
-    const state = await this.store.getSnapshot();
-    const migration = state.migration;
-    if (!migration || migration.id !== migrationId) throw new AppError('MIGRATION_BLOCKED', 'migration not found');
-    if (migration.phase === 'released') {
-      const currentInstance = await this.store.getInstance();
-      if (currentInstance.status !== 'retired') {
-        await this.store.updateInstance((instance) => {
-          instance.status = 'retired';
-          instance.allowedCapabilities = [];
-          instance.retiredAt = migration.releasedAt || nowIso(this.now);
-          instance.retiredMigrationId = migrationId;
-          instance.activationRevision = (instance.activationRevision || 0) + 1;
-        });
-      }
-      if (migration.releaseReceipt) return { migration: deepClone(migration), receipt: deepClone(migration.releaseReceipt), deduplicated: true };
-      throw new AppError('MIGRATION_BLOCKED', 'released migration has no receipt');
-    }
-    if (migration.phase !== 'sealed') throw new AppError('MIGRATION_BLOCKED', `cannot release from ${migration.phase}`);
-    const packageDir = migration.packageDir;
-    if (!packageDir || !(await pathExists(path.join(packageDir, 'manifest.json')))) {
-      throw new AppError('MIGRATION_BLOCKED', 'sealed package is missing');
-    }
-    const manifest = await readJson(path.join(packageDir, 'manifest.json'));
-    if (manifest.snapshotHash !== migration.snapshotHash) {
-      throw new AppError('MIGRATION_BLOCKED', 'sealed package hash does not match the ledger');
-    }
-    const receipt = {
+  async _ensureSourceRetired(migrationId, releasedAt) {
+    const currentInstance = await this.store.getInstance();
+    if (currentInstance.status === 'retired') return currentInstance;
+    await this.store.updateInstance((instance) => {
+      instance.status = 'retired';
+      instance.allowedCapabilities = [];
+      instance.retiredAt = releasedAt || nowIso(this.now);
+      instance.retiredMigrationId = migrationId;
+      instance.activationRevision = (instance.activationRevision || 0) + 1;
+    });
+    return this.store.getInstance();
+  }
+
+  _receiptFromManifest({ migrationId, migration, manifest, state, humanContext, releasedAt }) {
+    return {
       schemaVersion: 1,
       kind: 'migration_receipt',
       migrationId,
       workspaceId: state.workspaceId,
       sourceInstanceId: migration.sourceInstanceId,
       targetInstanceId: migration.targetInstanceId,
-      snapshotHash: migration.snapshotHash,
-      sourceHistoryEpoch: state.historyEpoch,
-      cutEventSeq: state.eventSeq,
-      releasedAt: nowIso(this.now),
+      snapshotHash: manifest.snapshotHash || migration.snapshotHash,
+      sourceHistoryEpoch: manifest.sourceHistoryEpoch || manifest.historyEpoch || state.historyEpoch,
+      cutEventSeq: Number.isSafeInteger(manifest.cutEventSeq) ? manifest.cutEventSeq : state.eventSeq,
+      releasedAt: releasedAt || nowIso(this.now),
       releasedBy: humanContext.principal.id
     };
-    await atomicWriteJson(path.join(packageDir, 'receipt.json'), receipt);
+  }
+
+  async _readSealedManifest(migration) {
+    const sealed = migration.sealedPackage || null;
+    const packageDir = migration.packageDir || sealed?.packageDir || null;
+    if (!packageDir || !(await pathExists(path.join(packageDir, 'manifest.json')))) {
+      throw new AppError('MIGRATION_BLOCKED', 'sealed package is missing');
+    }
+    const manifest = await readJson(path.join(packageDir, 'manifest.json'));
+    if (manifest.snapshotHash !== (migration.snapshotHash || sealed?.snapshotHash)) {
+      throw new AppError('MIGRATION_BLOCKED', 'sealed package hash does not match the ledger');
+    }
+    if (!Number.isSafeInteger(manifest.cutEventSeq) || typeof manifest.sourceHistoryEpoch !== 'string') {
+      throw new AppError('MIGRATION_BLOCKED', 'sealed manifest is missing the migration cut');
+    }
+    return { manifest, packageDir };
+  }
+
+  async _publishReleaseReceipt({ migrationId, packageDir, receipt }) {
+    if (packageDir) {
+      await atomicWriteJson(path.join(packageDir, 'receipt.json'), receipt);
+    }
+    return this.store.transaction(async (draft, tx) => {
+      if (draft.migration?.id !== migrationId || draft.migration.phase !== 'released') {
+        throw new AppError('MIGRATION_BLOCKED', 'migration phase changed while publishing the release receipt');
+      }
+      draft.migration = { ...draft.migration, releaseReceipt: receipt };
+      tx.appendEvent({
+        type: 'migration.release.receipt',
+        actor: 'system',
+        payload: { migrationId, snapshotHash: receipt.snapshotHash, targetInstanceId: receipt.targetInstanceId }
+      });
+      return deepClone(draft.migration);
+    });
+  }
+
+  async release({ migrationId }, humanContext) {
+    await this._requireHuman(humanContext, { action: 'migration.release', migrationId });
+    let state = await this.store.getSnapshot();
+    let migration = state.migration;
+    if (!migration || migration.id !== migrationId) throw new AppError('MIGRATION_BLOCKED', 'migration not found');
+    if (migration.phase === 'released') {
+      await this._ensureSourceRetired(migrationId, migration.releasedAt);
+      if (migration.releaseReceipt) {
+        return { migration: deepClone(migration), receipt: deepClone(migration.releaseReceipt), deduplicated: true };
+      }
+      // Crash after the released transition/instance retirement but before the
+      // receipt was published: rebuild it from the sealed manifest.
+      const { manifest, packageDir } = await this._readSealedManifest(migration);
+      const receipt = this._receiptFromManifest({
+        migrationId,
+        migration,
+        manifest,
+        state,
+        humanContext,
+        releasedAt: migration.releasedAt
+      });
+      migration = await this._publishReleaseReceipt({ migrationId, packageDir, receipt });
+      return { migration, receipt, deduplicated: true };
+    }
+    if (migration.phase !== 'sealed') throw new AppError('MIGRATION_BLOCKED', `cannot release from ${migration.phase}`);
+    const { manifest, packageDir } = await this._readSealedManifest(migration);
+    const releasedAt = nowIso(this.now);
+    const receipt = this._receiptFromManifest({
+      migrationId,
+      migration,
+      manifest,
+      state,
+      humanContext,
+      releasedAt
+    });
+    // 1) Persist the release control record first; dispatch stays blocked.
     const released = await this.store.transaction(async (draft, tx) => {
       if (draft.migration?.id !== migrationId || draft.migration.phase !== 'sealed') {
         throw new AppError('MIGRATION_BLOCKED', 'migration phase changed during release');
@@ -423,8 +597,12 @@ export class MigrationService {
       draft.migration = {
         ...draft.migration,
         phase: 'released',
-        releasedAt: receipt.releasedAt,
-        releaseReceipt: receipt
+        releasedAt,
+        releaseCut: {
+          sourceHistoryEpoch: receipt.sourceHistoryEpoch,
+          cutEventSeq: receipt.cutEventSeq,
+          snapshotHash: receipt.snapshotHash
+        }
       };
       tx.appendEvent({
         type: 'migration.released',
@@ -432,24 +610,129 @@ export class MigrationService {
         payload: {
           migrationId,
           snapshotHash: receipt.snapshotHash,
-          targetInstanceId: receipt.targetInstanceId
+          targetInstanceId: receipt.targetInstanceId,
+          cutEventSeq: receipt.cutEventSeq
         }
       });
       return deepClone(draft.migration);
     });
-    await this.store.updateInstance((instance) => {
-      instance.status = 'retired';
-      instance.allowedCapabilities = [];
-      instance.retiredAt = receipt.releasedAt;
-      instance.retiredMigrationId = migrationId;
-      instance.activationRevision = (instance.activationRevision || 0) + 1;
+    // 2) Persist the retired source instance, then 3) publish the receipt.
+    await this._ensureSourceRetired(migrationId, releasedAt);
+    migration = await this._publishReleaseReceipt({ migrationId, packageDir, receipt });
+    return { migration, receipt, deduplicated: false };
+  }
+
+  /**
+   * Called by the effect gateway from the same transaction that persists a late
+   * settlement result (SPEC §25.1). A sealed snapshot can no longer represent the
+   * source ledger, so the migration reopens and the package must be re-exported.
+   */
+  noteLateLedgerWrite(draft, tx, { operationId = null, kind = 'operation' } = {}) {
+    const migration = draft?.migration;
+    if (!migration || migration.phase !== 'sealed') return false;
+    const at = nowIso(this.now);
+    const entry = { operationId: operationId || null, kind: kind || 'operation', at };
+    draft.migration = {
+      ...migration,
+      phase: 'quiescing',
+      reopenedAt: at,
+      lateReceipts: [...(migration.lateReceipts || []), entry],
+      sealedPackage: null,
+      packageDir: null,
+      snapshotHash: null,
+      manifest: null,
+      sealedAt: null
+    };
+    tx.appendEvent({
+      type: 'migration.sealed.reopened',
+      actor: 'system',
+      payload: { migrationId: migration.id, operationId: entry.operationId, kind: entry.kind, at }
     });
-    return { migration: released, receipt, deduplicated: false };
+    return true;
+  }
+
+  async _taskManagerFor(store) {
+    if (this.taskManager) return this.taskManager;
+    const { TaskManager } = await import('./task-manager.js');
+    this.taskManager = new TaskManager({ store: store || this.store, now: this.now });
+    return this.taskManager;
+  }
+
+  async releaseTaskHold({ holdId, taskId, note = '' }, humanContext) {
+    if (typeof holdId !== 'string' || holdId === '') throw new AppError('CONFIG_INVALID', 'holdId is required');
+    if (typeof taskId !== 'string' || taskId === '') throw new AppError('CONFIG_INVALID', 'taskId is required');
+    await this._requireHuman(humanContext, { action: 'migration.release-hold', holdId, taskId });
+    const state = await this.store.getSnapshot();
+    const task = state.tasks[taskId];
+    if (!task) throw new AppError('FORBIDDEN', 'task not found');
+    const manager = await this._taskManagerFor(this.store);
+    return this.store.transaction(async (draft, tx) => {
+      const current = draft.tasks[taskId];
+      if (!current) throw new AppError('FORBIDDEN', 'task not found');
+      const hold = (current.holds || []).find((entry) => entry.id === holdId);
+      if (!hold) throw new AppError('FORBIDDEN', 'migration hold not found');
+      if (hold.kind !== 'migration') {
+        throw new AppError('FORBIDDEN', 'only kind=migration holds can be released by this command');
+      }
+      if (hold.status === 'released') {
+        return { hold: deepClone(hold), deduplicated: true, taskStatus: current.status, isSettled: current.isSettled };
+      }
+      if (current.executionActive) {
+        throw new AppError('FORBIDDEN', 'task still has an active execution; stop it before releasing the hold');
+      }
+      if (current.status === 'running') {
+        throw new AppError('FORBIDDEN', 'task is running; interrupt or settle it before releasing the hold');
+      }
+      const releasedAt = nowIso(this.now);
+      const decisionRef = `hold_release_${randomId('h').split('_').at(-1)}`;
+      hold.status = 'released';
+      hold.releaseDecisionRef = decisionRef;
+      hold.releasedAt = releasedAt;
+      hold.releaseNote = String(note || '').slice(0, 1000);
+      hold.releasedBy = humanContext.principal.id;
+      manager.recompute(tx, current);
+      tx.appendEvent({
+        type: 'task.hold.released',
+        actor: humanContext.principal.id,
+        taskId,
+        payload: { holdId, decisionRef, reason: hold.releaseNote }
+      });
+      return {
+        hold: deepClone(hold),
+        deduplicated: false,
+        taskStatus: current.status,
+        isSettled: current.isSettled
+      };
+    });
   }
 
   async importPackage({ from, dataDir }, humanContext) {
     await this._requireHuman(humanContext, { action: 'migration.import', from, dataDir });
     return this._importPackage({ from, dataDir });
+  }
+
+  async _assertTargetCapacity(targetDir, totalBytes) {
+    if (!Number.isSafeInteger(totalBytes) || totalBytes <= 0) return;
+    let candidate = path.resolve(targetDir);
+    let stats = null;
+    for (let depth = 0; depth < 20; depth += 1) {
+      if (await pathExists(candidate)) {
+        stats = await fsp.statfs(candidate).catch(() => null);
+        break;
+      }
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
+    }
+    if (!stats) return;
+    const freeBytes = Number(stats.bavail) * Number(stats.bsize);
+    if (!Number.isFinite(freeBytes)) return;
+    const required = Math.ceil(totalBytes * 1.1) + 16 * 1024 * 1024;
+    if (freeBytes < required) {
+      throw new AppError('MIGRATION_BLOCKED', 'target directory does not have enough free space for the migration package', {
+        details: { freeBytes, requiredBytes: required }
+      });
+    }
   }
 
   async _importPackage({ from, dataDir }) {
@@ -463,6 +746,14 @@ export class MigrationService {
     if (manifest.stateVersion !== MIGRATION_STATE_VERSION) {
       throw new AppError('SCHEMA_UNSUPPORTED', 'migration stateVersion must be 3');
     }
+    const config = this._config();
+    if (Number.isSafeInteger(manifest.fileCount) && manifest.fileCount > config.migration.maxFiles) {
+      throw new AppError('MIGRATION_BLOCKED', 'migration package exceeds maxFiles');
+    }
+    if (Number.isSafeInteger(manifest.totalBytes) && manifest.totalBytes > config.migration.maxTotalBytes) {
+      throw new AppError('MIGRATION_BLOCKED', 'migration package exceeds maxTotalBytes');
+    }
+    await this._assertTargetCapacity(dataDir, manifest.totalBytes);
     const targetStateFile = path.join(dataDir, 'state.json');
     if (await pathExists(targetStateFile)) throw new AppError('MIGRATION_BLOCKED', 'target data directory is not empty');
     const targetExisted = await pathExists(dataDir);
@@ -599,6 +890,7 @@ export class MigrationService {
     if (manifest.migrationId !== migrationId || manifest.targetInstanceId !== instance.intendedTargetInstanceId) {
       throw new AppError('MIGRATION_BLOCKED', 'manifest target does not match the imported instance');
     }
+    await this._verifyImportedSummary(dataDir, manifest);
     const activation = this.activationChecks
       ? await this.activationChecks({ state, instance, dataDir, manifest })
       : { capabilities: ['core:read', 'core:write'], blocked: ['platform_unverified'] };
@@ -645,12 +937,66 @@ export class MigrationService {
     return result;
   }
 
-  async activate({ migrationId, receipt, dataDir }, humanContext) {
-    await this._requireHuman(humanContext, { action: 'migration.activate', migrationId, snapshotHash: receipt?.snapshotHash });
-    return this._activate({ migrationId, receipt, dataDir });
+  async _verifyImportedSummary(dataDir, manifest) {
+    if (!manifest || !Array.isArray(manifest.files) || manifest.files.length === 0) {
+      throw new AppError('MIGRATION_BLOCKED', 'imported package manifest is missing its file list');
+    }
+    for (const file of manifest.files) {
+      if (!file || !isSafeRelativePath(file.path)) {
+        throw new AppError('MIGRATION_BLOCKED', 'imported package has an unsafe path');
+      }
+      if (file.role === 'state') continue; // the transformed target state is written locally
+      const relative = file.path.replace(/^(journal|diary|artifacts|posts)\//, '');
+      const rootName =
+        file.role === 'journal'
+          ? 'journal'
+          : file.role === 'diary'
+            ? 'diary'
+            : file.role === 'artifact'
+              ? 'artifacts'
+              : file.role === 'bundle'
+                ? 'posts'
+                : null;
+      if (!rootName) throw new AppError('MIGRATION_BLOCKED', `unknown imported file role ${file.role}`);
+      const target = resolveInside(dataDir, path.posix.join(rootName, relative));
+      const stat = await fsp.lstat(target).catch(() => null);
+      if (!stat || !stat.isFile() || stat.isSymbolicLink()) {
+        throw new AppError('MIGRATION_BLOCKED', 'imported file is missing or not a regular file', {
+          details: { path: file.path }
+        });
+      }
+      if (stat.size !== file.sizeBytes) {
+        throw new AppError('MIGRATION_BLOCKED', 'imported file size mismatch', { details: { path: file.path } });
+      }
+      const hash = (await fileSha256(target)).sha256;
+      if (hash !== file.sha256) {
+        throw new AppError('MIGRATION_BLOCKED', 'imported file digest mismatch', { details: { path: file.path } });
+      }
+    }
+    return true;
   }
 
-  async _activate({ migrationId, receipt, dataDir }) {
+  async activate(
+    { migrationId, receipt, dataDir, sourceStopped = false, sourceStoppedNote = null },
+    humanContext
+  ) {
+    if (sourceStopped !== true) {
+      throw new AppError(
+        'MIGRATION_BLOCKED',
+        'activate requires explicit operator confirmation that the source instance stopped writing',
+        { details: { requiresSourceStopped: true } }
+      );
+    }
+    await this._requireHuman(humanContext, {
+      action: 'migration.activate',
+      migrationId,
+      snapshotHash: receipt?.snapshotHash,
+      sourceStopped: true
+    });
+    return this._activate({ migrationId, receipt, dataDir, sourceStopped: true, sourceStoppedNote });
+  }
+
+  async _activate({ migrationId, receipt, dataDir, sourceStopped = false, sourceStoppedNote = null }) {
     const state = await readJson(path.join(dataDir, 'state.json'), 'MIGRATION_BLOCKED');
     const instance = await readJson(path.join(dataDir, 'instance.json'), 'MIGRATION_BLOCKED');
     const manifest = await readJson(path.join(dataDir, 'migration-package.json'), 'MIGRATION_BLOCKED');
@@ -672,6 +1018,7 @@ export class MigrationService {
     if (storedReceipt.snapshotHash !== receipt.snapshotHash) {
       throw new AppError('MIGRATION_BLOCKED', 'stored release receipt differs from the presented receipt');
     }
+    await this._verifyImportedSummary(dataDir, manifest);
     await this._targetProtection();
     assertNoMatchingHold(
       state,
@@ -684,6 +1031,8 @@ export class MigrationService {
       snapshotHash: receipt.snapshotHash,
       targetInstanceId: instance.instanceId,
       capabilities: instance.allowedCapabilities,
+      sourceStopped,
+      sourceStoppedNote: sourceStoppedNote ? String(sourceStoppedNote).slice(0, 1000) : null,
       preparedAt: nowIso(this.now)
     };
     state.migration = { ...state.migration, phase: 'validated', activationDecision: decision };
@@ -982,9 +1331,12 @@ export class MigrationService {
         sourceInstanceId: targetInstance.instanceId,
         targetInstanceId: reverseTargetInstanceId,
         historyEpoch: targetState.historyEpoch,
+        sourceHistoryEpoch: targetState.historyEpoch,
+        cutEventSeq: targetState.eventSeq,
         configRevision: deepClone(targetState.configRevision),
         timeZone: targetState.timeZone || 'Asia/Shanghai',
         stableAccountRefs: Object.values(targetState.accounts || {}).map((account) => account.accountRef),
+        profileDependencies: this._profileDependencies(),
         recoveryRefs: {
           holds: targetState.recovery?.holds || [],
           caseId: targetState.recovery?.id || null
@@ -1345,6 +1697,19 @@ export function sanitizeStateForMigration(state) {
   for (const principal of Object.values(clone.principals || {})) {
     principal.requiresReverification = true;
   }
+  // Old execution ownership is audit data only on the target; it must never be
+  // interpreted with the target machine's PIDs (SPEC FR-MIG-005/008).
+  for (const execution of Object.values(clone.executions || {})) {
+    if (['accepted', 'running', 'cancel_requested'].includes(execution.status)) {
+      execution.status = 'interrupted';
+      execution.error = { code: 'RECOVERY_REQUIRED', message: 'imported execution has no active owner' };
+      execution.finishedAt = execution.finishedAt || null;
+    }
+    execution.sourceOwnerPid = execution.ownerPid ?? null;
+    execution.sourceProcessStartedAt = execution.processStartedAt ?? null;
+    execution.ownerPid = null;
+    execution.processStartedAt = null;
+  }
   if (clone.migration) {
     clone.migration = {
       phase: clone.migration.phase,
@@ -1354,6 +1719,7 @@ export function sanitizeStateForMigration(state) {
       preparedAt: clone.migration.preparedAt,
       sealedAt: clone.migration.sealedAt,
       snapshotHash: clone.migration.snapshotHash || null,
+      cutEventSeq: clone.migration.sealedPackage?.cutEventSeq ?? clone.migration.manifest?.cutEventSeq ?? null,
       receipt: null
     };
   }

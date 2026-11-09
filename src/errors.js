@@ -153,6 +153,22 @@ export function isSecretKey(key) {
   );
 }
 
+const MESSAGE_SECRET_PATTERNS = Object.freeze([
+  [/\b(SESSDATA|bili_jct|buvid3|DedeUserID)=([^;\s"'<>]+)/gi, '$1=[redacted]'],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [redacted]'],
+  [/([?&](?:api_key|apikey|access_token|token|secret|key)=)([^&\s"'<>]+)/gi, '$1[redacted]']
+]);
+
+/** Redact credential-shaped substrings from a free-form error message. */
+export function redactSecretMessage(message) {
+  if (typeof message !== 'string' || message === '') return message;
+  let output = message;
+  for (const [pattern, replacement] of MESSAGE_SECRET_PATTERNS) {
+    output = output.replace(pattern, replacement);
+  }
+  return output;
+}
+
 export class AppError extends Error {
   constructor(code, message, options = {}) {
     if (!ERROR_CODES.includes(code)) {
@@ -171,7 +187,7 @@ export class AppError extends Error {
   toJSON() {
     return {
       code: this.code,
-      message: this.message,
+      message: redactSecretMessage(this.message),
       retryable: this.retryable,
       details: redactSecrets(this.details)
     };

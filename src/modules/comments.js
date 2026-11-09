@@ -113,25 +113,79 @@ export class CommentsModule {
     );
   }
 
-  async createDraft({ candidate, text = null, root = 0, parent = 0, principal, trigger = 'manual', parentTaskId = null }) {
-    const config = this.configService.get();
-    if (!config.comments.enabled) throw new AppError('FEATURE_DISABLED', 'comments are disabled');
-    if (!candidate?.contentRef?.contentId) throw new AppError('INPUT_REQUIRED', 'comment candidate is required');
-    if (candidate.platformData?.aid === undefined && candidate.contentRef.platform !== 'bilibili') {
+  async _resolveContent({ candidate = null, contentRef = null } = {}) {
+    const requestedRef = contentRef || candidate?.contentRef;
+    if (!requestedRef?.contentId) throw new AppError('INPUT_REQUIRED', 'comment candidate is required');
+    const platform = requestedRef.platform || 'bilibili';
+    // Caller supplied platformData is never trusted (D-03/G-E1): the write
+    // target aid/cid comes from the platform adapter for this contentRef.
+    const requested = {
+      contentRef: { platform, contentId: requestedRef.contentId },
+      title: truncateText(candidate?.title || '', 300),
+      author: deepClone(candidate?.author || null)
+    };
+    let resolved = null;
+    if (typeof this.adapter?.readContent === 'function') {
+      try {
+        resolved = await this.adapter.readContent(requested, {
+          includeComments: false,
+          includeSubtitle: false
+        });
+      } catch (error) {
+        throw new AppError('DEPENDENCY_UNAVAILABLE', 'cannot resolve the comment target content', {
+          cause: error
+        });
+      }
+    }
+    const resolvedPlatformData = resolved?.platformData;
+    const platformData = {};
+    if (resolvedPlatformData && typeof resolvedPlatformData === 'object' && !Array.isArray(resolvedPlatformData)) {
+      if (Number.isSafeInteger(Number(resolvedPlatformData.aid)) && Number(resolvedPlatformData.aid) > 0) {
+        platformData.aid = Number(resolvedPlatformData.aid);
+      }
+      if (Number.isSafeInteger(Number(resolvedPlatformData.cid)) && Number(resolvedPlatformData.cid) > 0) {
+        platformData.cid = Number(resolvedPlatformData.cid);
+      }
+    }
+    // Corrected aid requirement: Bilibili writes need an adapter resolved aid;
+    // other platforms must not be forced to carry one.
+    if (platform === 'bilibili' && platformData.aid === undefined) {
       throw new AppError('INPUT_REQUIRED', 'platformData.aid is required for Bilibili comments');
     }
+    const resolvedRef = resolved?.contentRef?.contentId ? resolved.contentRef : requestedRef;
+    return {
+      contentRef: deepClone({
+        platform: resolvedRef.platform || platform,
+        contentId: String(resolvedRef.contentId)
+      }),
+      title: truncateText(resolved?.title || candidate?.title || '', 300),
+      author: deepClone(resolved?.author || candidate?.author || null),
+      platformData
+    };
+  }
+
+  async createDraft({ candidate = null, contentRef = null, text = null, root = 0, parent = 0, principal, trigger = 'manual', parentTaskId = null }) {
+    const config = this.configService.get();
+    if (!config.comments.enabled) throw new AppError('FEATURE_DISABLED', 'comments are disabled');
+    if (!candidate?.contentRef?.contentId && !contentRef?.contentId) {
+      throw new AppError('INPUT_REQUIRED', 'comment candidate is required');
+    }
     const account = await this._activeAccount();
-    if (candidate.author?.accountId === account.accountRef.accountId) {
+    const resolved = await this._resolveContent({ candidate, contentRef });
+    if (
+      resolved.author?.accountId &&
+      String(resolved.author.accountId) === String(account.accountRef.accountId)
+    ) {
       throw new AppError('FORBIDDEN', 'cannot comment on your own content');
     }
-    const message = this._prepareText(text, config, candidate);
+    const message = this._prepareText(text, config, resolved);
     const textHash = normalizedTextHash(message);
-    const keys = this._targetKeys(account, candidate, textHash);
+    const keys = this._targetKeys(account, resolved, textHash);
     const input = {
-      contentRef: deepClone(candidate.contentRef),
-      platformData: deepClone(candidate.platformData || {}),
-      title: truncateText(candidate.title, 300),
-      author: deepClone(candidate.author || null),
+      contentRef: resolved.contentRef,
+      platformData: deepClone(resolved.platformData),
+      title: resolved.title,
+      author: resolved.author,
       text: message,
       textHash,
       root: Number(root) || 0,
@@ -145,6 +199,7 @@ export class CommentsModule {
       action: 'comment.send',
       input: {
         contentRef: input.contentRef,
+        platformData: input.platformData,
         text: message,
         root: input.root,
         parent: input.parent
@@ -152,7 +207,7 @@ export class CommentsModule {
       target: {
         platform: account.accountRef.platform,
         accountId: account.accountRef.accountId,
-        contentId: candidate.contentRef.contentId
+        contentId: input.contentRef.contentId
       },
       feeCapMinor: 0
     });
@@ -165,9 +220,29 @@ export class CommentsModule {
       const pending = this._findPendingDraft(draft, keys.target);
       if (pending) {
         if (pending.inputHash !== inputHash) {
-          throw new AppError('DUPLICATE_TARGET', 'target already has a pending draft for different text', {
-            details: { taskId: pending.id }
-          });
+          // Same target, changed text: revise the single pending draft instead
+          // of accumulating tasks (M-P2-5 / I3). Without reviseInput the old
+          // fail-closed DUPLICATE_TARGET behaviour is kept.
+          if (typeof this.taskManager.reviseInput !== 'function') {
+            throw new AppError('DUPLICATE_TARGET', 'target already has a pending draft for different text', {
+              details: { taskId: pending.id }
+            });
+          }
+          this.taskManager.reviseInput(tx, pending, { input, inputHash }, { actor: principal.id });
+          const revisedTask = draft.tasks[pending.id];
+          if (config.comments.mode === 'approval') {
+            const challenge = this.approvalService.create(tx, {
+              task: revisedTask,
+              action: 'comment.send',
+              inputHash: revisedTask.inputHash,
+              principalId: principal.id,
+              ttlSec: this.approvalTtlSec,
+              source: principal.sourceKind
+            });
+            revisedTask.input.approvalId = challenge.approval.id;
+            return { task: revisedTask, challenge, reused: true, revised: true };
+          }
+          return { task: revisedTask, challenge: null, reused: true, revised: true };
         }
         if (config.comments.mode === 'approval') {
           const challenge = this.approvalService.create(tx, {
@@ -234,6 +309,7 @@ export class CommentsModule {
       nonce: result.challenge?.nonce || null,
       expiresAt: result.challenge?.expiresAt || null,
       reused: result.reused,
+      revised: result.revised === true,
       dryRun: false
     };
   }

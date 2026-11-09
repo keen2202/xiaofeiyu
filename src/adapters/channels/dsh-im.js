@@ -7,7 +7,6 @@ const IM_ACTION_SET = new Set([
   'task.get',
   'task.list',
   'task.cancel',
-  'task.resume',
   'approval.decide',
   'comment.draft'
 ]);
@@ -197,6 +196,27 @@ export class ImBridge {
     this.now = now;
     this.logger = logger;
     this.started = false;
+    this.timer = null;
+    this.pumping = null;
+    this.observeTasks = (tx, previous) => {
+      const config = this.configService.get();
+      if (!config.im.enabled || !config.im.notifications.enabled) return;
+      for (const task of Object.values(tx.state.tasks)) {
+        const target = task.notificationTarget;
+        if (!target || (target.group && config.im.groupReplies === 'none')) continue;
+        const old = previous.tasks[task.id];
+        if (old?.notificationTarget && old.status === task.status && old.revision === task.revision) continue;
+        const binding = tx.state.bindings[target.bindingId];
+        if (!binding || binding.revokedAt || !binding.conversationIds.includes(target.conversationId)) continue;
+        const notification = this.effectGateway.appendNotification(tx, {
+          ...target, taskId: task.id, taskRevision: task.revision,
+          summary: `Task ${task.id}: ${task.status}`, deferred: true
+        });
+        const inbox = tx.state.inboxKeys[target.inboxKey];
+        if (inbox?.result) inbox.result.notificationId = notification.id;
+      }
+    };
+    this.store.commitObservers.add(this.observeTasks);
   }
 
   async start(onEvent) {
@@ -208,13 +228,41 @@ export class ImBridge {
       return response;
     });
     this.started = true;
+    this.timer = setInterval(() => this.pump().catch(error => this.logger?.warn?.('outbox pump failed', { code: error.code })), 1000);
+    this.timer.unref?.();
     return { ...result, started: true };
   }
 
   async stop() {
+    clearInterval(this.timer);
+    this.timer = null;
+    this.started = false;
+    await this.pumping?.catch(() => {});
     if (this.channel) await this.channel.stop();
     this.started = false;
     return { stopped: true };
+  }
+
+  async pump() {
+    if (!this.started) return { sent: 0 };
+    if (this.pumping) return this.pumping;
+    this.pumping = (async () => {
+      const state = await this.store.getSnapshot();
+      let sent = 0;
+      for (const notification of Object.values(state.outbox).filter(item => item.status === 'pending').slice(0, 20)) {
+        if (!this.started) break;
+        try {
+          await this.dispatchOutbox(notification.id);
+          sent++;
+        } catch (error) {
+          // A blocked pending notification remains queued. Sending/unknown is never retried.
+          if (['RATE_LIMITED', 'QUOTA_EXCEEDED', 'FEATURE_DISABLED', 'BACKUP_UNPROTECTED', 'BACKUP_STALE', 'BACKUP_INVALID'].includes(error.code)) break;
+          this.logger?.warn?.('outbox blocked', { code: error.code, notificationId: notification.id });
+        }
+      }
+      return { sent };
+    })().finally(() => { this.pumping = null; });
+    return this.pumping;
   }
 
   _assertEvent(event, trustedContext) {
@@ -287,6 +335,8 @@ export class ImBridge {
           conversationId: event.conversationId
         });
       });
+      if (existing.status === 'failed') throw new AppError(existing.error?.code || 'OPERATION_UNKNOWN', existing.error?.message || 'IM command failed');
+      if (existing.status === 'pending') throw new AppError('OPERATION_UNKNOWN', 'IM command is pending inspection; it is not replayed');
       return { ...existing.result, deduplicated: true };
     }
     if (!event.eventId && !RELIABLE_READ_ACTIONS.has(command.action)) {
@@ -351,7 +401,7 @@ export class ImBridge {
     });
     const envelope = {
       schemaVersion: 1,
-      requestId: `im-${event.eventId || `${event.adapterId}-${event.botAccountId}-${Date.now()}`}`,
+      requestId: `im-${jcsHash({ adapterId: event.adapterId, botAccountId: event.botAccountId, conversationId: event.conversationId, eventId: event.eventId || Date.now() })}`,
       action: command.action,
       input: command.input,
       mode: command.mode
@@ -361,23 +411,24 @@ export class ImBridge {
       response = await this.commandService.execute(envelope, principal, {
         sourceKind: 'im',
         humanContext,
-        trusted: true
+        trusted: true,
+        inboxKey: dedupeKey,
+        notificationTarget: { bindingId: bindingResolution.binding.bindingId, conversationId: event.conversationId, group: event.group === true, inboxKey: dedupeKey }
       });
     } catch (error) {
       await this.store.transaction(async (draft) => {
         const record = draft.inboxKeys[dedupeKey];
         if (!record) return;
-        record.status = 'failed';
+        record.status = record.taskId ? 'accepted' : 'failed';
         record.error = { code: error.code || 'DEPENDENCY_UNAVAILABLE', message: truncateText(error.message, 500) };
         record.updatedAt = nowIso(this.now);
       }).catch(() => {});
       throw error;
     }
-    let notificationId = null;
+    let notificationId = (await this.store.getSnapshot()).inboxKeys[dedupeKey]?.result?.notificationId || null;
     let protectionError = null;
-    if (config.im.notifications.enabled && this.effectGateway) {
+    if (!notificationId && config.im.notifications.enabled && this.effectGateway && !(event.group && config.im.groupReplies === 'none')) {
       try {
-        await this.effectGateway.assertNotificationProtection(bindingResolution.binding, event.conversationId);
         const notification = await this.store.transaction(async (draft, tx) => {
           const created = this.effectGateway.appendNotification(tx, {
             taskId: response.taskId,
@@ -385,7 +436,8 @@ export class ImBridge {
             bindingId: bindingResolution.binding.bindingId,
             conversationId: event.conversationId,
             summary: truncateText(`Task ${response.taskId || 'draft'}: ${response.status || 'accepted'}`, 500),
-            actor: principal.id
+            actor: principal.id,
+            deferred: true
           });
           const record = draft.inboxKeys[dedupeKey];
           if (record) {

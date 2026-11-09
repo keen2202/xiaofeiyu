@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BVID_PATTERN,
+  assertExecutionDispatchContext,
   buildRequestKey,
   computeInputHash,
   computeMetadataHash,
+  createExecutionDispatchContext,
   normalizeRequestEnvelope,
   scopeCovers,
   scopeKeyFor,
@@ -107,4 +110,48 @@ test('recovery scopes are structured and workspace parents cover children', () =
     assertNoMatchingHold({ workspaceId: 'w', recovery: { holds: [hold] }, tasks: {} }, workspace),
     true
   );
+});
+
+test('ExecutionDispatchContext is built and shape-validated per I4', () => {
+  const context = createExecutionDispatchContext({
+    executionId: 'exec_1',
+    taskId: 'task_1',
+    stageId: 'render',
+    attempt: 1,
+    inputHash: 'jcs-sha256-v1:' + 'a'.repeat(64),
+    instanceId: 'instance_1',
+    profileId: 'local-slideshow-v1',
+    issuedAt: '2026-11-07T00:00:00.000Z'
+  });
+  assert.deepEqual(context, {
+    executionId: 'exec_1',
+    taskId: 'task_1',
+    stageId: 'render',
+    attempt: 1,
+    inputHash: 'jcs-sha256-v1:' + 'a'.repeat(64),
+    instanceId: 'instance_1',
+    profileId: 'local-slideshow-v1',
+    permit: 'dispatch-once',
+    issuedAt: '2026-11-07T00:00:00.000Z'
+  });
+  assert.equal(assertExecutionDispatchContext(context), context);
+  assert.throws(
+    () => createExecutionDispatchContext({ executionId: 'exec_1', taskId: 'task_1' }),
+    (error) => error.code === 'FORBIDDEN'
+  );
+  assert.throws(
+    () => assertExecutionDispatchContext({ ...context, permit: 'forever' }),
+    (error) => error.code === 'FORBIDDEN'
+  );
+  assert.throws(
+    () => assertExecutionDispatchContext({ ...context, attempt: 0 }),
+    (error) => error.code === 'FORBIDDEN'
+  );
+  assert.throws(
+    () => assertExecutionDispatchContext({ ...context, attempt: 1.5 }),
+    (error) => error.code === 'FORBIDDEN'
+  );
+  assert.equal(BVID_PATTERN.test('BV1xx411c7mD'), true);
+  assert.equal(BVID_PATTERN.test('not-a-bv'), false);
+  assert.equal(BVID_PATTERN.test('BV123'), false);
 });

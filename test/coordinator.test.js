@@ -74,7 +74,8 @@ test('start/stop are idempotent and waiting approval does not block the next bro
     const secondStart = await coordinator.start();
     assert.equal(secondStart.deduplicated, true);
     const round = await coordinator.runBrowse({ trigger: 'manual' });
-    assert.equal(round.task.status, 'succeeded');
+    assert.equal(round.task.status, 'partial');
+    assert.equal(round.task.isSettled, false);
     assert.equal(round.interactions.comments.length, 1);
     const commentTask = (await harness.snapshot()).tasks[round.interactions.comments[0].taskId];
     assert.equal(commentTask.status, 'waiting_approval');

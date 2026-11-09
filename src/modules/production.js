@@ -7,13 +7,13 @@ import {
   ensureWithin,
   getProcessStartMs,
   isProcessAlive,
+  jcsHash,
   processStartIso,
   isSafeRelativePath,
   nowIso,
   pathExists,
   randomId,
   resolveInside,
-  sha256Hex,
   truncateText
 } from '../utils.js';
 import {
@@ -120,7 +120,7 @@ export class ProductionModule {
     };
   }
 
-  async _resolveInputs(inputs, principal) {
+  async _resolveInputs(inputs, principal, profile = LOCAL_SLIDESHOW_PROFILE) {
     if (!Array.isArray(inputs) || inputs.length === 0) throw new AppError('INPUT_REQUIRED', 'inputs are required');
     const state = await this.store.getSnapshot();
     const artifacts = [];
@@ -142,10 +142,21 @@ export class ProductionModule {
     const visuals = [...byRole('image'), ...byRole('clip')];
     const audio = byRole('audio');
     const subtitle = byRole('subtitle');
-    if (scripts.length !== 1) throw new AppError('INPUT_REQUIRED', 'exactly one script artifact is required');
-    if (visuals.length === 0) throw new AppError('INPUT_REQUIRED', 'at least one image or clip is required');
+    const requiredInputs = profile.requiredInputs || LOCAL_SLIDESHOW_PROFILE.requiredInputs;
+    if (scripts.length !== requiredInputs.script) {
+      throw new AppError('INPUT_REQUIRED', `exactly ${requiredInputs.script} script artifact is required`);
+    }
+    if (visuals.length < requiredInputs.visual) {
+      throw new AppError('INPUT_REQUIRED', `at least ${requiredInputs.visual} image or clip is required`);
+    }
     if (audio.length > 1) throw new AppError('INPUT_REQUIRED', 'at most one audio artifact is supported');
     if (subtitle.length > 1) throw new AppError('INPUT_REQUIRED', 'at most one subtitle artifact is supported');
+    const requiredOutputs = profile.requiredOutputs || LOCAL_SLIDESHOW_PROFILE.requiredOutputs;
+    for (const role of requiredOutputs) {
+      if (!['video', 'cover'].includes(role)) {
+        throw new AppError('CONFIG_INVALID', `unsupported required output ${role}`);
+      }
+    }
     const scriptPath = await this.artifactStore.resolveManagedPath(scripts[0].artifactId, { verify: true });
     const scriptText = await fsp.readFile(scriptPath.absolute, 'utf8');
     if (scriptText.trim() === '') throw new AppError('INPUT_REQUIRED', 'script artifact is empty');
@@ -170,7 +181,7 @@ export class ProductionModule {
     const profileId = input.profileId || config.production.profileId;
     const profile = await this._loadProfile(profileId);
     const output = validateOutputSpec(input.output, { profile, config });
-    const resolved = await this._resolveInputs(input.inputs, principal);
+    const resolved = await this._resolveInputs(input.inputs, principal, profile);
     const limits = this._limits(input.limits, output);
     if (input.providerRefs && Object.keys(input.providerRefs).length > 0) {
       if (!this.paidProvider) throw new AppError('CAPABILITY_UNSUPPORTED', 'paid providers are not configured');
@@ -191,6 +202,12 @@ export class ProductionModule {
       }
       if (textRef.providerId !== this.paidProvider.id) {
         throw new AppError('CAPABILITY_UNSUPPORTED', 'paid provider id does not match the configured provider');
+      }
+      if (!profile.providerRefs?.text) {
+        throw new AppError('CAPABILITY_UNSUPPORTED', 'profile does not declare providerRefs.text');
+      }
+      if (profile.providerRefs.text.providerId && profile.providerRefs.text.providerId !== textRef.providerId) {
+        throw new AppError('CAPABILITY_UNSUPPORTED', 'profile providerRefs.text does not allow this provider');
       }
     }
     const inputHash = computeInputHash({
@@ -412,12 +429,22 @@ export class ProductionModule {
         }
       }
     }
+    const profile = await this._loadProfile(task.input.profileId);
     const challenge = await this.store.transaction(async (draft, tx) => {
       const current = draft.tasks[taskId];
       for (const entry of current.stages || []) {
+        const restartSafe = profile.restartSafe?.[entry.stage] !== false;
         if (entry.status === 'running') {
           entry.status = 'interrupted';
           entry.finishedAt = nowIso(this.now);
+        }
+        if (
+          ['interrupted', 'failed', 'unknown'].includes(entry.status) &&
+          !restartSafe
+        ) {
+          // A non-restart-safe stage cannot reuse a partial attempt's checkpoint.
+          entry.checkpoint = null;
+          entry.evidence = null;
         }
       }
       this.taskManager.transition(tx, current, 'running', {
@@ -607,6 +634,8 @@ export class ProductionModule {
     }
     return {
       checkpoint: {
+        stageId: 'script',
+        lastConfirmedSeq: 0,
         inputHash: task.inputHash,
         profileVersion: profile.version,
         scriptArtifactId: task.input.scriptArtifactId,
@@ -639,6 +668,8 @@ export class ProductionModule {
     if (visuals.length === 0) throw new AppError('INPUT_REQUIRED', 'at least one visual is required');
     return {
       checkpoint: {
+        stageId: 'assets',
+        lastConfirmedSeq: 0,
         inputHash: task.inputHash,
         profileVersion: task.input.profileVersion,
         visuals
@@ -804,6 +835,8 @@ export class ProductionModule {
         ? { reason: 'no_audio_provided', profileVoiceMode: profile.voiceMode, allowed: true }
         : null,
       checkpoint: {
+        stageId: 'voice',
+        lastConfirmedSeq: 0,
         inputHash: task.inputHash,
         profileVersion: profile.version,
         audioArtifactId: task.input.audioArtifactId,
@@ -851,8 +884,25 @@ export class ProductionModule {
       ? (await this.artifactStore.resolveManagedPath(voice.subtitleArtifactId, { verify: true })).absolute
       : null;
     const executionId = randomId('exec');
-    const attempt =
-      Object.values(state.executions).filter((exec) => exec.taskId === taskId && exec.stageId === 'render').length + 1;
+    const renderExecutions = Object.values(state.executions)
+      .filter((exec) => exec.taskId === taskId && exec.stageId === 'render')
+      .sort((a, b) => (a.attempt || 0) - (b.attempt || 0));
+    const attempt = renderExecutions.length + 1;
+    const previousExecutionId = renderExecutions.at(-1)?.executionId || null;
+    const previousRenderStage = task.stages.find((entry) => entry.stage === 'render');
+    const checkpointRef =
+      previousExecutionId && previousRenderStage?.checkpoint?.executionId
+        ? {
+            executionId: previousRenderStage.checkpoint.executionId,
+            videoRel: previousRenderStage.checkpoint.videoRel || null,
+            coverRel: previousRenderStage.checkpoint.coverRel || null
+          }
+        : null;
+    const inputArtifactRefs = (task.input.artifactIds || [])
+      .map((artifactId) => state.artifacts[artifactId])
+      .filter(Boolean)
+      .map((artifact) => ({ artifactId: artifact.artifactId, sha256: artifact.sha256, role: artifact.role }));
+    const instance = await this.store.getInstance();
     const workDirRel = path.posix.join(taskId, executionId);
     const workDir = resolveInside(this.artifactStore.workDir, workDirRel);
     await fsp.mkdir(workDir, { recursive: true });
@@ -861,7 +911,12 @@ export class ProductionModule {
       taskId,
       stageId: 'render',
       attempt,
+      requestId: task.input.requestId || null,
+      workspaceId: state.workspaceId,
+      instanceId: instance?.instanceId || null,
       inputHash: task.inputHash,
+      inputArtifactRefs,
+      restartSafe: profile.restartSafe?.render ?? null,
       profileId: profile.id,
       profile: { id: profile.id, version: profile.version },
       tools: { ffmpeg: profile.tools.ffmpeg, ffprobe: profile.tools.ffprobe },
@@ -901,6 +956,12 @@ export class ProductionModule {
         historyEpoch: draft.historyEpoch,
         eventSeq: draft.eventSeq,
         workDirRel,
+        previousExecutionId,
+        checkpointRef,
+        requestId: task.input.requestId || null,
+        workspaceId: state.workspaceId,
+        instanceId: instance?.instanceId || null,
+        inputArtifactRefs,
         ownerPid: process.pid,
         processStartedAt: processStartIso(),
         createdAt: nowIso(this.now),
@@ -914,9 +975,22 @@ export class ProductionModule {
         type: 'production.execution.persisted',
         actor: principal?.id || 'system',
         taskId,
-        payload: { executionId, stage: 'render', attempt }
+        payload: { executionId, stage: 'render', attempt, previousExecutionId }
       });
     });
+    const dispatchContext =
+      typeof this.effectGateway?.issueExecutionContext === 'function'
+        ? this.effectGateway.issueExecutionContext({
+            executionId,
+            taskId,
+            stageId: 'render',
+            attempt,
+            inputHash: task.inputHash,
+            instanceId: instance?.instanceId || null,
+            profileId: profile.id
+          })
+        : null;
+    if (dispatchContext !== null) stageRequest.dispatchContext = dispatchContext;
     const backend = this._backend();
     let final;
     try {
@@ -969,6 +1043,8 @@ export class ProductionModule {
       }
       return {
         checkpoint: {
+          stageId: 'render',
+          lastConfirmedSeq: final.seq,
           inputHash: task.inputHash,
           profileVersion: profile.version,
           executionId,
@@ -1049,11 +1125,14 @@ export class ProductionModule {
         video: { artifactId: video.artifactId, sha256: video.sha256, role: 'video' },
         cover: { artifactId: cover.artifactId, sha256: cover.sha256, role: 'cover' }
       },
-      media: result.media,
+      media: result.media ?? null,
       validatedAt: nowIso(this.now)
     };
+    const manifestHash = jcsHash(manifest);
     return {
       checkpoint: {
+        stageId: 'validate',
+        lastConfirmedSeq: 0,
         inputHash: task.inputHash,
         profileVersion: profile.version,
         videoArtifactId: video.artifactId,
@@ -1061,7 +1140,7 @@ export class ProductionModule {
         videoSha256: video.sha256,
         coverSha256: cover.sha256,
         media: result.media,
-        manifestHash: sha256Hex(JSON.stringify(manifest))
+        manifestHash
       },
       finalize: (tx, current) => {
         tx.state.productions[taskId] = {
@@ -1087,7 +1166,7 @@ export class ProductionModule {
             videoArtifactId: video.artifactId,
             coverArtifactId: cover.artifactId,
             media: result.media,
-            manifestHash: sha256Hex(JSON.stringify(manifest))
+            manifestHash
           }
         });
       }

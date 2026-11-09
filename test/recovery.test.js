@@ -50,6 +50,52 @@ async function restoreBackup({ kind = 'full', missingMedia = false } = {}) {
   return { ...setup, artifact, backup, backupDir, targetDir, restored, store, recovery: inspectService };
 }
 
+// Records the two evidence documents required to unlock one scope (FR-DR-006/008):
+// a closed uncertainty range from isolation evidence plus repair/verification
+// preconditions for the scope.
+async function unlockScopeEvidence(ctx, scope) {
+  const inspected = await ctx.recovery.inspect(ctx.restored.recoveryId);
+  const startAt = inspected.uncertaintyRange?.startAt || new Date().toISOString();
+  const capturedAt = new Date(Date.parse(startAt) + 60_000).toISOString();
+  const isolation = await ctx.recovery.reconcile(
+    {
+      recoveryId: ctx.restored.recoveryId,
+      evidence: {
+        kind: 'isolation',
+        source: 'owner:storage-isolation',
+        sourceHash: 'sha256:' + 'd'.repeat(64),
+        conclusion: 'isolated',
+        capturedAt,
+        scope
+      }
+    },
+    ctx.harness.humanContext
+  );
+  const preconditions = await ctx.recovery.reconcile(
+    {
+      recoveryId: ctx.restored.recoveryId,
+      evidence: {
+        kind: 'fact',
+        source: 'owner:repair-review',
+        sourceHash: 'sha256:' + 'e'.repeat(64),
+        conclusion: 'recorded',
+        scope,
+        coveredRange: { startAt, endAt: capturedAt },
+        preconditions: {
+          permanentKeysRepaired: true,
+          budgetRepaired: true,
+          accountsReverified: [
+            { platform: scope.platform || 'bilibili', accountId: scope.accountId || '1001', verifiedAt: capturedAt }
+          ],
+          recoveryPointBackupId: 'backup_new_verified'
+        }
+      }
+    },
+    ctx.harness.humanContext
+  );
+  return { startAt, capturedAt, isolation, preconditions };
+}
+
 test('restore creates a read-only new epoch and preserves permanent keys/unknowns', async () => {
   const ctx = await restoreBackup({ kind: 'full' });
   try {
@@ -98,6 +144,8 @@ test('ledger restore reports missing media and never marks productions ready', a
 test('reconcile records fencing evidence without granting write access', async () => {
   const ctx = await restoreBackup({ kind: 'full' });
   try {
+    const inspected = await ctx.recovery.inspect(ctx.restored.recoveryId);
+    const capturedAt = new Date(Date.parse(inspected.uncertaintyRange.startAt) + 60_000).toISOString();
     const reconciled = await ctx.recovery.reconcile(
       {
         recoveryId: ctx.restored.recoveryId,
@@ -106,6 +154,7 @@ test('reconcile records fencing evidence without granting write access', async (
           source: 'owner:storage-isolation',
           sourceHash: 'sha256:' + 'a'.repeat(64),
           conclusion: 'isolated',
+          capturedAt,
           note: 'old machine powered off and credentials revoked',
           scope: { kind: 'workspace', workspaceId: (await ctx.store.getSnapshot()).workspaceId }
         }
@@ -119,6 +168,9 @@ test('reconcile records fencing evidence without granting write access', async (
     assert.equal(state.recovery.holds.every((hold) => hold.status === 'active'), true);
     const instance = await ctx.store.getInstance();
     assert.equal(instance.status, 'recovery-readonly');
+    const closed = await ctx.recovery.inspect(ctx.restored.recoveryId);
+    assert.equal(closed.uncertaintyRange.open, false);
+    assert.ok(closed.uncertaintyRange.endAt);
   } finally {
     await ctx.store.close();
     await ctx.cleanup();
@@ -130,29 +182,18 @@ test('authorize releases only the requested scope with evidence at the current r
   const ctx = await restoreBackup({ kind: 'full' });
   try {
     const workspaceId = (await ctx.store.getSnapshot()).workspaceId;
-    const reconciled = await ctx.recovery.reconcile(
-      {
-        recoveryId: ctx.restored.recoveryId,
-        evidence: {
-          kind: 'isolation',
-          source: 'owner:storage-isolation',
-          sourceHash: 'sha256:' + 'b'.repeat(64),
-          conclusion: 'isolated'
-        }
-      },
-      ctx.harness.humanContext
-    );
     const before = await ctx.store.getSnapshot();
     const activeBefore = before.recovery.holds.filter((hold) => hold.status === 'active');
     const commentHold = activeBefore.find(
       (hold) => hold.scope.kind === 'account_action' && hold.scope.action === 'comment'
     );
     assert.ok(commentHold);
+    const { isolation } = await unlockScopeEvidence(ctx, commentHold.scope);
     const authorized = await ctx.recovery.authorize(
       {
         recoveryId: ctx.restored.recoveryId,
         scope: commentHold.scope,
-        evidenceId: reconciled.evidenceId
+        evidenceId: isolation.evidenceId
       },
       ctx.harness.humanContext
     );
@@ -169,6 +210,8 @@ test('authorize releases only the requested scope with evidence at the current r
     const inspected = await ctx.recovery.inspect(ctx.restored.recoveryId);
     assert.equal(inspected.phase, 'restricted');
     assert.equal(inspected.decisions.length, 1);
+    assert.equal(inspected.uncertaintyRange.open, false);
+    assert.equal(workspaceId, before.workspaceId);
   } finally {
     await ctx.store.close();
     await ctx.cleanup();
@@ -190,18 +233,8 @@ test('authorize without isolation evidence fails closed; instance projection cra
       ),
       (error) => error.code === 'RECOVERY_FENCING_REQUIRED'
     );
-    const reconciled = await ctx.recovery.reconcile(
-      {
-        recoveryId: ctx.restored.recoveryId,
-        evidence: {
-          kind: 'isolation',
-          source: 'owner',
-          sourceHash: 'sha256:' + 'c'.repeat(64),
-          conclusion: 'isolated'
-        }
-      },
-      ctx.harness.humanContext
-    );
+    const commented = await unlockScopeEvidence(ctx, commentHold.scope);
+    const reconciled = commented.isolation;
     const { RecoveryService } = await import('../src/backup-recovery.js');
     const failing = new RecoveryService({
       store: ctx.store,

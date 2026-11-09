@@ -96,32 +96,64 @@ test('environment overrides have priority and preserve valid false', async () =>
 
 test('paths derive from dataDir with expected defaults', () => {
   const config = structuredClone(DEFAULT_CONFIG);
-  config.dataDir = '/tmp/example-data';
+  config.dataDir = path.resolve('example-data');
   const paths = resolvePaths(config, {});
-  assert.equal(paths.stateFile, '/tmp/example-data/state.json');
-  assert.equal(paths.journalDir, '/tmp/example-data/journal');
-  assert.equal(paths.artifactsDir, '/tmp/example-data/artifacts');
-  assert.equal(paths.productionProfilesFile, '/tmp/example-data/production-profiles.json');
+  assert.equal(paths.stateFile, path.join(config.dataDir, 'state.json'));
+  assert.equal(paths.journalDir, path.join(config.dataDir, 'journal'));
+  assert.equal(paths.artifactsDir, path.join(config.dataDir, 'artifacts'));
+  assert.equal(paths.productionProfilesFile, path.join(config.dataDir, 'production-profiles.json'));
 });
 
 test('configuration update is validated, increments revision and rejects HTTP privilege changes', async () => {
   const harness = await createHarness();
   try {
     const before = await harness.snapshot();
-    const updated = await harness.configService.update({ browse: { enabled: true } }, { source: 'http' });
+    const updated = await harness.configService.update(
+      { browse: { enabled: true } },
+      { source: 'http', expectedRevision: before.configRevision.version }
+    );
     assert.equal(updated.browse.enabled, true);
     const after = await harness.snapshot();
     assert.equal(after.configRevision.version, before.configRevision.version + 1);
     assert.equal(after.configRevision.sha256, computeConfigHash(harness.configService.get()));
     await assert.rejects(
-      () => harness.configService.update({ timeZone: 'UTC' }, { source: 'http' }),
+      () =>
+        harness.configService.update(
+          { timeZone: 'UTC' },
+          { source: 'http', expectedRevision: after.configRevision.version }
+        ),
       (error) => error.code === 'FORBIDDEN'
     );
     await assert.rejects(
-      () => harness.configService.update({ dryRun: false }, { source: 'http' }),
+      () =>
+        harness.configService.update(
+          { dryRun: false },
+          { source: 'http', expectedRevision: after.configRevision.version }
+        ),
       (error) => error.code === 'FORBIDDEN'
     );
   } finally {
     await harness.cleanup();
   }
+});
+
+test('browse failure cooldown and no-subtitle fallback are validated config fields', () => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  assert.equal(config.browse.failureCooldownMinutes, 360);
+  assert.equal(config.browse.allowNoSubtitle, false);
+  assert.doesNotThrow(() => validateConfig(config));
+
+  config.browse.failureCooldownMinutes = 0;
+  assert.doesNotThrow(() => validateConfig(config));
+  for (const invalid of [-1, 10081, '360', 1.5]) {
+    const bad = structuredClone(DEFAULT_CONFIG);
+    bad.browse.failureCooldownMinutes = invalid;
+    assert.throws(() => validateConfig(bad), (error) => error.code === 'CONFIG_INVALID');
+  }
+  const badBoolean = structuredClone(DEFAULT_CONFIG);
+  badBoolean.browse.allowNoSubtitle = 'false';
+  assert.throws(() => validateConfig(badBoolean), (error) => error.code === 'CONFIG_INVALID');
+  const unknown = structuredClone(DEFAULT_CONFIG);
+  unknown.browse.typoCooldown = 1;
+  assert.throws(() => validateConfig(unknown), (error) => error.code === 'CONFIG_INVALID');
 });

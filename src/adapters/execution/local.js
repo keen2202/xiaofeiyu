@@ -22,7 +22,8 @@ export class LocalExecutionBackend {
     env = null,
     maxLineBytes = MAX_LINE_BYTES,
     maxTotalBytes = MAX_TOTAL_BYTES,
-    killGraceMs = 3000
+    killGraceMs = 3000,
+    executionContextVerifier = null
   } = {}) {
     this.backendId = 'local';
     this.runnerPath = runnerPath;
@@ -35,6 +36,7 @@ export class LocalExecutionBackend {
     this.maxLineBytes = maxLineBytes;
     this.maxTotalBytes = maxTotalBytes;
     this.killGraceMs = killGraceMs;
+    this.executionContextVerifier = executionContextVerifier;
     this.records = new Map();
     this.active = 0;
     this.closing = false;
@@ -68,6 +70,24 @@ export class LocalExecutionBackend {
       throw new AppError('CAPABILITY_UNSUPPORTED', `local backend does not run stage ${request.stageId}`);
     }
     if (!path.isAbsolute(request.workDir)) throw new AppError('INPUT_REQUIRED', 'workDir must be absolute');
+    for (const key of ['requestId', 'workspaceId', 'instanceId']) {
+      if (request[key] !== undefined && request[key] !== null && typeof request[key] !== 'string') {
+        throw new AppError('INPUT_REQUIRED', `stageRequest.${key} must be a string`);
+      }
+    }
+    if (request.inputArtifactRefs !== undefined) {
+      if (
+        !Array.isArray(request.inputArtifactRefs) ||
+        request.inputArtifactRefs.some(
+          (ref) => !ref || typeof ref.artifactId !== 'string' || typeof ref.sha256 !== 'string' || typeof ref.role !== 'string'
+        )
+      ) {
+        throw new AppError('INPUT_REQUIRED', 'inputArtifactRefs must be structured artifact refs');
+      }
+    }
+    if (this.executionContextVerifier && (!request.dispatchContext || typeof request.dispatchContext !== 'object')) {
+      throw new AppError('FORBIDDEN', 'ExecutionDispatchContext is required for local dispatch');
+    }
     if (!request.tools?.ffmpeg || !request.tools?.ffprobe) {
       throw new AppError('INPUT_REQUIRED', 'tools.ffmpeg and tools.ffprobe are required');
     }
@@ -83,13 +103,40 @@ export class LocalExecutionBackend {
     return request;
   }
 
+  _verifyExecutionContext(request) {
+    if (!this.executionContextVerifier) return;
+    try {
+      this.executionContextVerifier.verify(request.dispatchContext);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError('FORBIDDEN', 'ExecutionDispatchContext verification failed', { cause: error });
+    }
+  }
+
+  _consumeExecutionContext(request) {
+    if (!this.executionContextVerifier) return;
+    try {
+      this.executionContextVerifier.consume(request.dispatchContext);
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      throw new AppError('FORBIDDEN', 'ExecutionDispatchContext consumption failed', { cause: error });
+    }
+  }
+
   async submit(request) {
     this._validateRequest(request);
+    this._verifyExecutionContext(request);
     if (this.closing) throw new AppError('DEPENDENCY_UNAVAILABLE', 'execution backend is closing');
     const existing = this.records.get(request.executionId);
     if (existing) {
       if (TERMINAL.has(existing.status)) {
         throw new AppError('IDEMPOTENCY_CONFLICT', 'executionId is already terminal and cannot be restarted');
+      }
+      if (
+        (request.requestId !== undefined && existing.requestId !== undefined && request.requestId !== existing.requestId) ||
+        (request.inputHash !== undefined && existing.inputHash !== undefined && request.inputHash !== existing.inputHash)
+      ) {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'executionId was reused with a different requestId/inputHash');
       }
       return {
         executionId: existing.executionId,
@@ -107,6 +154,12 @@ export class LocalExecutionBackend {
       stageId: request.stageId,
       attempt: request.attempt,
       inputHash: request.inputHash,
+      requestId: request.requestId || null,
+      workspaceId: request.workspaceId || null,
+      instanceId: request.instanceId || null,
+      profileId: request.profileId,
+      inputArtifactRefs: request.inputArtifactRefs ? structuredClone(request.inputArtifactRefs) : [],
+      dispatchContextIssued: Boolean(request.dispatchContext),
       status: 'accepted',
       seq: 0,
       events: [],
@@ -140,6 +193,7 @@ export class LocalExecutionBackend {
     }
 
     const env = this._environment();
+    this._consumeExecutionContext(request);
     let child;
     try {
       child = spawn(this.nodeExecPath, [this.runnerPath], {
@@ -230,6 +284,11 @@ export class LocalExecutionBackend {
         taskId: request.taskId,
         stageId: request.stageId,
         attempt: request.attempt,
+        requestId: request.requestId || null,
+        workspaceId: request.workspaceId || null,
+        instanceId: request.instanceId || null,
+        restartSafe: request.restartSafe ?? null,
+        inputArtifactRefs: request.inputArtifactRefs || [],
         profile: request.profile || { id: request.profileId },
         tools: request.tools,
         workDir: request.workDir,

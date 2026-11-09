@@ -138,7 +138,8 @@ async function fullFlow({ activate = true } = {}) {
       {
         migrationId: prepared.migration.id,
         receipt: released.receipt,
-        dataDir: targetDir
+        dataDir: targetDir,
+        sourceStopped: true
       },
       source.harness.humanContext
     );
@@ -382,7 +383,7 @@ test('activate resumes after a crash between instance activation and ledger comm
     });
     await assert.rejects(
       () => crashing.activate(
-        { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir },
+        { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir, sourceStopped: true },
         flow.source.harness.humanContext
       ),
       /simulated power cut/
@@ -399,7 +400,7 @@ test('activate resumes after a crash between instance activation and ledger comm
       now: flow.source.harness.now
     });
     const activated = await retry.activate(
-      { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir },
+      { migrationId, receipt: flow.released.receipt, dataDir: flow.targetDir, sourceStopped: true },
       flow.source.harness.humanContext
     );
     assert.equal(activated.phase, 'active');

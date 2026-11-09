@@ -40,7 +40,7 @@ test('import hashes and copies a file without deleting the source', async () => 
   }
 });
 
-test('empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are rejected', async () => {
+test('empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are rejected', async (t) => {
   const harness = await createHarness();
   try {
     const file = await harness.makeSourceFile('a.txt', 'x');
@@ -49,18 +49,29 @@ test('empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are r
       (error) => error.code === 'ARTIFACT_INVALID'
     );
     await withAllowed(harness, [harness.sourceDir], async () => {
-      const link = path.join(harness.sourceDir, 'link.txt');
-      await fs.symlink(file, link);
-      await assert.rejects(
-        () => harness.artifactStore.importFile({ sourcePath: link, role: 'script', principal: harness.owner }),
-        (error) => error.code === 'ARTIFACT_INVALID'
-      );
-      const hard = path.join(harness.sourceDir, 'hard.txt');
-      await fs.link(file, hard);
-      await assert.rejects(
-        () => harness.artifactStore.importFile({ sourcePath: hard, role: 'script', principal: harness.owner }),
-        (error) => error.code === 'ARTIFACT_INVALID'
-      );
+      await t.test('file symlink is rejected when the OS permits fixture creation', async (sub) => {
+        const link = path.join(harness.sourceDir, 'link.txt');
+        try { await fs.symlink(file, link); }
+        catch (error) {
+          if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(error.code)) {
+            sub.skip('Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for file symlinks'); return;
+          }
+          throw error;
+        }
+        await assert.rejects(() => harness.artifactStore.importFile({ sourcePath: link, role: 'script', principal: harness.owner }), error => error.code === 'ARTIFACT_INVALID');
+      });
+      await t.test('hardlink is rejected when the filesystem permits fixture creation', async (sub) => {
+        const hard = path.join(harness.sourceDir, 'hard.txt');
+        try { await fs.link(file, hard); }
+        catch (error) {
+          if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+            sub.skip('Windows sandbox/filesystem does not permit hardlink creation'); return;
+          }
+          throw error;
+        }
+        await assert.rejects(() => harness.artifactStore.importFile({ sourcePath: hard, role: 'script', principal: harness.owner }), error => error.code === 'ARTIFACT_INVALID');
+        await fs.unlink(hard);
+      });
       await assert.rejects(
         () => harness.artifactStore.importFile({ sourcePath: '/etc/passwd', role: 'script', principal: harness.owner }),
         (error) => error.code === 'ARTIFACT_INVALID'
@@ -70,6 +81,7 @@ test('empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are r
         (error) => error.code === 'ARTIFACT_INVALID'
       );
       harness.configService.config.artifacts.maxImportBytes = 1;
+      await fs.writeFile(file, 'oversized');
       await assert.rejects(
         () => harness.artifactStore.importFile({ sourcePath: file, role: 'script', principal: harness.owner }),
         (error) => error.code === 'ARTIFACT_INVALID'

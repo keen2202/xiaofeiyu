@@ -4,5 +4,6 @@
     enabled: true
     exports: dsh-bili-unified
     config:
+      schemaVersion: 1
       enabled: true
       httpPrefix: /dsh-bili-unified/api

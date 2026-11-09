@@ -171,14 +171,23 @@ export class DirectMessagesModule {
         throw new AppError('INPUT_REQUIRED', 'DM resume input does not match the original task');
       }
     }
+    // Fast-path snapshot check. When the gateway implements the I7 cooldown
+    // option the authoritative same-recipient window check runs inside the
+    // reservation transaction; this stays as the fallback for gateways that do
+    // not consume `cooldown` yet. The window only applies after a confirmed
+    // send, so a proven not_sent/failed attempt is immediately resumable.
     this._checkTargetCooldown(state, targetKey, config);
+    const targetRecord = state.businessKeys[targetKey];
+    const cooldown =
+      targetRecord?.status === 'confirmed' && config.directMessages.sameVideoDays > 0
+        ? { businessKey: targetKey, days: config.directMessages.sameVideoDays }
+        : null;
     const reusable = [];
     for (const key of [primaryKey, targetKey]) {
       const record = state.businessKeys[key];
       if (record && ['failed', 'not_sent', 'cancelled'].includes(record.status)) reusable.push(key);
     }
     if (state.businessKeys[targetKey]?.status === 'confirmed') {
-      this._checkTargetCooldown(state, targetKey, config);
       reusable.push(targetKey);
     }
 
@@ -247,6 +256,9 @@ export class DirectMessagesModule {
         reusableBusinessKeys: reusable,
         taskIds: [task.id],
         inputHash,
+        // I7: same-recipient cooldown window is enforced by the gateway in the
+        // same reservation transaction as the business key/quotas.
+        ...(cooldown ? { cooldown } : {}),
         quota: { key: `bilibili:${account.accountRef.accountId}`, action: 'dm', actionQuota: quota },
         protected: true,
         target: {

@@ -1,6 +1,19 @@
 import { AppError } from './errors.js';
 import { deepClone, jcsHash, nowIso, randomId, randomToken, sha256Hex } from './utils.js';
 
+/**
+ * Migration/recovery invalidates previously issued challenges by setting flags
+ * on the approval record. Those flags must be consumed, not just written
+ * (SPEC §22.2 / FR-IM-004).
+ */
+export function approvalInvalidReason(approval) {
+  if (!approval) return 'missing';
+  if (approval.usableForAuthorization === false) return 'invalidated';
+  if (approval.invalidatedByMigration === true) return 'migration';
+  if (approval.requiresReverification === true) return 'reverification_required';
+  return null;
+}
+
 export const APPROVAL_ACTIONS = Object.freeze([
   'comment.send',
   'dm.send',
@@ -188,6 +201,12 @@ export class ApprovalService {
   _assertChallengeCurrent(approval, task, nonce = null) {
     if (!task) throw new AppError('APPROVAL_STALE', 'approval task not found');
     if (approval.supersededAt) throw new AppError('APPROVAL_STALE', 'approval was superseded');
+    const invalid = approvalInvalidReason(approval);
+    if (invalid) {
+      throw new AppError('APPROVAL_STALE', `approval was invalidated (${invalid})`, {
+        details: { approvalId: approval.id, reason: invalid }
+      });
+    }
     if (approval.decidedAt && approval.decision !== 'pending') {
       throw new AppError('APPROVAL_STALE', 'approval is already decided');
     }
@@ -220,8 +239,17 @@ export class ApprovalService {
         approval.decision === 'approve' &&
         approval.decidedAt
     );
-    const approval = candidates.sort((a, b) => String(b.decidedAt).localeCompare(String(a.decidedAt)))[0];
-    if (!approval) throw new AppError('APPROVAL_REQUIRED', 'no approved challenge for this action');
+    const usable = candidates.filter((approval) => !approvalInvalidReason(approval));
+    const approval = usable.sort((a, b) => String(b.decidedAt).localeCompare(String(a.decidedAt)))[0];
+    if (!approval) {
+      if (candidates.length > 0) {
+        const invalid = candidates.find((entry) => approvalInvalidReason(entry));
+        throw new AppError('APPROVAL_STALE', 'approval was invalidated after it was issued', {
+          details: { approvalId: invalid?.id || null, reason: approvalInvalidReason(invalid) }
+        });
+      }
+      throw new AppError('APPROVAL_REQUIRED', 'no approved challenge for this action');
+    }
     if (approval.inputHash !== inputHash) throw new AppError('APPROVAL_STALE', 'approval input no longer matches');
     if (Date.parse(approval.expiresAt) <= this.now().getTime()) {
       throw new AppError('APPROVAL_STALE', 'approval decision has expired');

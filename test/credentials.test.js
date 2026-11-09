@@ -6,13 +6,17 @@ import path from 'node:path';
 import { CredentialService, credentialRevision, loadCredentials, saveCredentials } from '../src/credentials.js';
 import { createHarness } from './helpers/harness.js';
 
-test('credentials load from file with environment priority and are saved 0600', async () => {
+test('credentials save atomically with platform permissions and environment priority', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cred-'));
   const file = path.join(dir, 'credentials.json');
   try {
     await saveCredentials(file, { sessdata: 'file', bili_jct: 'j', buvid3: 'b', dedeuserid: '1' });
     const stat = await fs.stat(file);
-    assert.equal(stat.mode & 0o777, 0o600);
+    if (process.platform === 'win32') {
+      // NTFS ACLs are not represented by the POSIX mode bits in Node.
+      assert.equal(stat.isFile(), true);
+      t.diagnostic('Windows: POSIX 0600 assertion does not apply; this test does not certify NTFS ACL isolation');
+    } else assert.equal(stat.mode & 0o777, 0o600);
     const loaded = await loadCredentials({ file, env: { BILI_SESSDATA: 'env' } });
     assert.equal(loaded.sessdata, 'env');
     assert.equal(loaded.bili_jct, 'j');

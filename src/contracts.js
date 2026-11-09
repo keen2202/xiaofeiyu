@@ -13,6 +13,9 @@ import {
 export const SCHEMA_VERSION = 1;
 export const REQUEST_MODES = Object.freeze(['dry', 'go']);
 
+/** Bilibili BV identifier shape used for publish readback verification. */
+export const BVID_PATTERN = /^BV[0-9A-Za-z]{6,32}$/;
+
 export const REQUEST_ACTIONS = Object.freeze([
   'status.get',
   'account.verify',
@@ -330,6 +333,39 @@ export function assertExecutionDispatchContext(context) {
   if (context.permit !== 'dispatch-once') {
     throw new AppError('FORBIDDEN', 'invalid ExecutionDispatchContext permit');
   }
+  if (!Number.isSafeInteger(context.attempt) || context.attempt < 1) {
+    throw new AppError('FORBIDDEN', 'ExecutionDispatchContext.attempt must be a positive integer');
+  }
+  return context;
+}
+
+/**
+ * Build the context the core issues for a free local execution dispatch
+ * (SPEC §21.2). `assertExecutionDispatchContext` only checks shape; binding to
+ * a live executionId/attempt is enforced by the gateway token registry.
+ */
+export function createExecutionDispatchContext({
+  executionId,
+  taskId,
+  stageId,
+  attempt,
+  inputHash,
+  instanceId = null,
+  profileId = null,
+  issuedAt = null
+} = {}) {
+  const context = {
+    executionId,
+    taskId,
+    stageId,
+    attempt,
+    inputHash,
+    instanceId: instanceId ?? null,
+    profileId: profileId ?? null,
+    permit: 'dispatch-once',
+    issuedAt: issuedAt || new Date().toISOString()
+  };
+  assertExecutionDispatchContext(context);
   return context;
 }
 

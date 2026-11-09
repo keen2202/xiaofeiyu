@@ -29,6 +29,7 @@ export class EventJournal {
   constructor({ store, dir, now = () => new Date(), hooks = {}, logger, segmentMaxEvents = JOURNAL_SEGMENT_MAX_EVENTS } = {}) {
     this.store = store;
     this.dir = dir;
+    this.store.journalDir = dir;
     this.now = now;
     this.hooks = hooks;
     this.logger = logger;
@@ -61,7 +62,7 @@ export class EventJournal {
         afterRename: this.hooks.afterSegmentRename
       }
     });
-    return { relative, file, hash, startSeq, endSeq, count: events.length };
+    return { relative, file, hash, startSeq, endSeq, count: events.length, events, sizeBytes: (await fsp.stat(file)).size };
   }
 
   async flush({ maxEvents = 2000 } = {}) {
@@ -78,34 +79,42 @@ export class EventJournal {
       segments.push(await this._writeSegment(snapshot.historyEpoch, chunk));
     }
 
+    let archivedCount = 0;
     const confirmed = await this.store.transaction(async (draft, tx) => {
       const registered = [];
       for (const segment of segments) {
-        const currentEvents = segmentEventsFromPending(draft, segment, snapshot.historyEpoch);
-        if (!currentEvents) {
-          throw new AppError('JOURNAL_CORRUPTED', 'journal pending changed during archival');
-        }
         const key = `${snapshot.historyEpoch}:${segment.startSeq}-${segment.endSeq}`;
-        if (draft.journalSegments[key]) {
-          const existing = draft.journalSegments[key];
+        const existing = draft.journalSegments[key];
+        if (existing) {
           if (existing.hash !== segment.hash) {
             throw new AppError('JOURNAL_CORRUPTED', 'journal segment sequence conflict', {
               details: { epoch: snapshot.historyEpoch, startSeq: segment.startSeq, endSeq: segment.endSeq }
             });
           }
-        } else {
-          draft.journalSegments[key] = {
-            key,
-            relativePath: segment.relative,
-            historyEpoch: snapshot.historyEpoch,
-            startSeq: segment.startSeq,
-            endSeq: segment.endSeq,
-            hash: segment.hash,
-            count: segment.count,
-            createdAt: nowIso(this.now)
-          };
+          // Idempotent success: the same segment range/hash was already
+          // confirmed by a concurrent process (or a previous crashed attempt).
+          // Only clean residual pending copies that are content-identical.
+          archivedCount += clearIdempotentPending(draft, snapshot.historyEpoch, segment);
+          registered.push(key);
+          continue;
         }
+        const currentEvents = segmentEventsFromPending(draft, segment, snapshot.historyEpoch);
+        if (!currentEvents) {
+          throw new AppError('JOURNAL_CORRUPTED', 'journal pending changed during archival');
+        }
+        draft.journalSegments[key] = {
+          key,
+          relativePath: segment.relative,
+          historyEpoch: snapshot.historyEpoch,
+          startSeq: segment.startSeq,
+          endSeq: segment.endSeq,
+          hash: segment.hash,
+          count: segment.count,
+          sizeBytes: segment.sizeBytes,
+          createdAt: nowIso(this.now)
+        };
         for (const event of currentEvents) delete draft.journalPending[event.eventId];
+        archivedCount += currentEvents.length;
         registered.push(key);
       }
       // Archival itself is not a business fact; emitting an event here would
@@ -114,7 +123,7 @@ export class EventJournal {
     });
 
     await this._writeIndexes(snapshot.historyEpoch);
-    return { archived: pending.length, segments: confirmed };
+    return { archived: archivedCount, segments: confirmed };
   }
 
   async archiveAll({ maxRounds = 100, maxEvents = 2000 } = {}) {
@@ -261,6 +270,30 @@ function segmentEventsFromPending(draft, segment, epoch) {
   const hash = segmentHash(epoch, events);
   if (hash !== segment.hash) return null;
   return events;
+}
+
+/**
+ * Remove pending copies still present for an already-confirmed segment.
+ * Content-identical copies are dropped silently; conflicting content is real
+ * corruption and always fails closed.
+ */
+function clearIdempotentPending(draft, epoch, segment) {
+  const expectedBySeq = new Map(segment.events.map((event) => [event.seq, event]));
+  let removed = 0;
+  for (const [eventId, event] of Object.entries(draft.journalPending)) {
+    if (event.historyEpoch !== epoch) continue;
+    if (event.seq < segment.startSeq || event.seq > segment.endSeq) continue;
+    const expected = expectedBySeq.get(event.seq);
+    if (!expected) continue;
+    if (jcsHash(event) !== jcsHash(expected)) {
+      throw new AppError('JOURNAL_CORRUPTED', 'journal segment sequence conflict', {
+        details: { epoch, seq: event.seq }
+      });
+    }
+    delete draft.journalPending[eventId];
+    removed += 1;
+  }
+  return removed;
 }
 
 export default EventJournal;

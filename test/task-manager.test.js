@@ -135,6 +135,9 @@ test('settled combination matrix rejects invalid succeeded/cancelled states', as
       assert.doesNotThrow(() => harness.taskManager.assertSettledCombination(current));
       current.isSettled = false;
       assert.throws(() => harness.taskManager.assertSettledCombination(current), (error) => error.code === 'STORE_CORRUPTED');
+      // validateState now rejects illegal combinations at commit time, so the
+      // deliberately corrupted draft must be restored before the transaction ends.
+      current.isSettled = true;
     });
   } finally {
     await harness.cleanup();

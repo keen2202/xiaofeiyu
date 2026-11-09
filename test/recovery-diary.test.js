@@ -69,6 +69,8 @@ test('diary rebuild after recovery includes facts archived before the parent cut
       });
       const stateBefore = await store.getSnapshot();
       const workspaceScope = { kind: 'workspace', workspaceId: stateBefore.workspaceId };
+      const startAt = stateBefore.recovery.uncertaintyRange.startAt;
+      const capturedAt = new Date(Date.parse(startAt) + 60_000).toISOString();
       const isolation = await recovery.reconcile(
         {
           recoveryId: restored.recoveryId,
@@ -76,7 +78,29 @@ test('diary rebuild after recovery includes facts archived before the parent cut
             kind: 'isolation',
             source: 'owner',
             sourceHash: 'sha256:' + 'f'.repeat(64),
-            conclusion: 'isolated'
+            conclusion: 'isolated',
+            capturedAt,
+            scope: workspaceScope
+          }
+        },
+        setup.harness.humanContext
+      );
+      await recovery.reconcile(
+        {
+          recoveryId: restored.recoveryId,
+          evidence: {
+            kind: 'fact',
+            source: 'owner:repair-review',
+            sourceHash: 'sha256:' + '8'.repeat(64),
+            conclusion: 'recorded',
+            scope: workspaceScope,
+            coveredRange: { startAt, endAt: capturedAt },
+            preconditions: {
+              permanentKeysRepaired: true,
+              budgetRepaired: true,
+              accountsReverified: [{ platform: 'bilibili', accountId: '1001', verifiedAt: capturedAt }],
+              recoveryPointBackupId: 'backup_new_verified'
+            }
           }
         },
         setup.harness.humanContext
@@ -173,6 +197,9 @@ test('diary rebuild tolerates a backup cut with unflushed parent events', async 
         now: setup.harness.now
       });
       const stateBefore = await store.getSnapshot();
+      const workspaceScope = { kind: 'workspace', workspaceId: stateBefore.workspaceId };
+      const startAt = stateBefore.recovery.uncertaintyRange.startAt;
+      const capturedAt = new Date(Date.parse(startAt) + 60_000).toISOString();
       const isolation = await recovery.reconcile(
         {
           recoveryId: restored.recoveryId,
@@ -180,7 +207,29 @@ test('diary rebuild tolerates a backup cut with unflushed parent events', async 
             kind: 'isolation',
             source: 'owner',
             sourceHash: 'sha256:' + 'a'.repeat(64),
-            conclusion: 'isolated'
+            conclusion: 'isolated',
+            capturedAt,
+            scope: workspaceScope
+          }
+        },
+        setup.harness.humanContext
+      );
+      await recovery.reconcile(
+        {
+          recoveryId: restored.recoveryId,
+          evidence: {
+            kind: 'fact',
+            source: 'owner:repair-review',
+            sourceHash: 'sha256:' + '5'.repeat(64),
+            conclusion: 'recorded',
+            scope: workspaceScope,
+            coveredRange: { startAt, endAt: capturedAt },
+            preconditions: {
+              permanentKeysRepaired: true,
+              budgetRepaired: true,
+              accountsReverified: [{ platform: 'bilibili', accountId: '1001', verifiedAt: capturedAt }],
+              recoveryPointBackupId: 'backup_new_verified'
+            }
           }
         },
         setup.harness.humanContext

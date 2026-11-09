@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { AppError } from '../errors.js';
+import { AppError, redactSecrets } from '../errors.js';
 import {
   assertAccountRef,
   assertArtifactRef,
@@ -29,6 +29,17 @@ import {
 
 const execFileAsync = promisify(execFile);
 const BV_PATTERN = /^BV[0-9A-Za-z]{6,32}$/;
+const PUBLISH_INPUT_KEYS = new Set([
+  'schemaVersion',
+  'requestId',
+  'mode',
+  'accountRef',
+  'metadata',
+  'provider',
+  'productionTaskId',
+  'videoArtifactId',
+  'coverArtifactId'
+]);
 
 export class PublisherModule {
   constructor({
@@ -39,6 +50,7 @@ export class PublisherModule {
     artifactStore,
     configService,
     effectGateway,
+    adapter = null,
     now = () => new Date(),
     logger,
     hooks = {}
@@ -50,6 +62,9 @@ export class PublisherModule {
     this.artifactStore = artifactStore;
     this.configService = configService;
     this.effectGateway = effectGateway;
+    // Optional PlatformAdapter (I8): metadata limits/validation stay with the
+    // platform capability owner. Absent wiring keeps the legacy validation.
+    this.adapter = adapter;
     this.now = now;
     this.logger = logger;
     this.hooks = hooks;
@@ -86,8 +101,39 @@ export class PublisherModule {
     );
   }
 
-  _validateMetadata(metadata) {
-    if (!metadata || typeof metadata !== 'object') throw new AppError('PUBLISH_INPUT_INVALID', 'metadata is required');
+  _metadataAdapter() {
+    return this.adapter || this.effectGateway?.adapter || this.effectGateway?.platformAdapter || null;
+  }
+
+  _normalizeMetadata(metadata) {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata is required');
+    }
+    if (typeof metadata.title !== 'string' || metadata.title.trim() === '') {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'title is required');
+    }
+    const description = metadata.description === undefined ? '' : String(metadata.description);
+    const tags = metadata.tags === undefined ? [] : metadata.tags;
+    if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string')) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'tags must be an array of strings');
+    }
+    const platformData = metadata.platformData === undefined ? {} : metadata.platformData;
+    if (typeof platformData !== 'object' || Array.isArray(platformData) || platformData === null) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.platformData must be an object');
+    }
+    return {
+      title: metadata.title.trim(),
+      description: description.trim(),
+      tags: [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))],
+      platformData: deepClone(platformData)
+    };
+  }
+
+  /** Fallback used when the platform adapter does not expose I8 metadata validation. */
+  _validateMetadataFallback(metadata) {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata is required');
+    }
     if (typeof metadata.title !== 'string' || metadata.title.trim() === '' || metadata.title.length > 80) {
       throw new AppError('PUBLISH_INPUT_INVALID', 'title must be 1..80 characters');
     }
@@ -104,20 +150,58 @@ export class PublisherModule {
     if (platformData.tid !== undefined && (!Number.isSafeInteger(platformData.tid) || platformData.tid <= 0)) {
       throw new AppError('PUBLISH_INPUT_INVALID', 'platformData.tid must be a positive integer');
     }
-    return {
-      title: metadata.title.trim(),
-      description: description.trim(),
-      tags: [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))],
-      platformData: deepClone(platformData)
-    };
+    return this._normalizeMetadata(metadata);
+  }
+
+  async _validateMetadata(metadata) {
+    const adapter = this._metadataAdapter();
+    if (typeof adapter?.validatePublishMetadata === 'function') {
+      // I8: the adapter owns the real platform limits and throws
+      // PUBLISH_INPUT_INVALID with the offending field.
+      const validated = await adapter.validatePublishMetadata(metadata);
+      return this._normalizeMetadata(validated === undefined || validated === null ? metadata : validated);
+    }
+    return this._validateMetadataFallback(metadata);
+  }
+
+  /** Strip credential-shaped key/value pairs from external publisher output. */
+  _redactExternalOutput(value, maxChars = 500) {
+    const text = String(value ?? '');
+    const lines = text.split(/\r?\n/).map((line) => {
+      const match = /^\s*([A-Za-z0-9_.-]{1,64})\s*[=:]\s*(.+)$/.exec(line);
+      if (!match) return line;
+      const record = redactSecrets({ [match[1]]: match[2] });
+      return record[match[1]] === '[redacted]' ? `${match[1]}=[redacted]` : line;
+    });
+    return truncateText(lines.join('\n'), maxChars);
   }
 
   async create(input, principal) {
-    if (!input || typeof input !== 'object') throw new AppError('PUBLISH_INPUT_INVALID', 'publish input is required');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'publish input is required');
+    }
+    if (input.schemaVersion !== undefined && input.schemaVersion !== 1) {
+      throw new AppError('SCHEMA_UNSUPPORTED', 'publish input schemaVersion must be 1', {
+        details: { schemaVersion: input.schemaVersion }
+      });
+    }
+    // §15.1: an `approved` flag in the request never grants authorization; the
+    // approval service challenge is the only path to go.
+    if (Object.prototype.hasOwnProperty.call(input, 'approved')) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'input.approved is not accepted; use the approval service', {
+        details: { field: 'approved' }
+      });
+    }
+    const unknownFields = Object.keys(input).filter((key) => !PUBLISH_INPUT_KEYS.has(key));
+    if (unknownFields.length > 0) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'unknown publish input fields are not accepted', {
+        details: { fields: unknownFields.sort() }
+      });
+    }
     if (!['dry', 'go'].includes(input.mode)) throw new AppError('CONFIG_INVALID', 'mode must be dry or go');
     const config = this._config();
     const account = await this._activeAccount(input.accountRef);
-    const metadata = this._validateMetadata(input.metadata);
+    const metadata = await this._validateMetadata(input.metadata);
     const provider = input.provider || config.publishing.provider;
     if (!['manual', 'external'].includes(provider)) throw new AppError('CONFIG_INVALID', 'provider must be manual or external');
     if (provider === 'external') {
@@ -619,19 +703,28 @@ export class PublisherModule {
         throw new AppError('OPERATION_UNKNOWN', 'external publisher timed out or was terminated');
       }
       // A non-zero exit after start is not proof that nothing was published.
+      // Output is bounded and credential-shaped key/value pairs are redacted
+      // before it can reach Operation.error / logs (M09/§15.5).
       throw new AppError('OPERATION_UNKNOWN', 'external publisher exited without a verifiable receipt', {
-        details: { stderr: truncateText(stderr || error.message, 500) }
+        details: {
+          stderr: this._redactExternalOutput(stderr || error.message),
+          stdout: this._redactExternalOutput(stdout)
+        }
       });
     }
     const text = String(stdout || '').trim();
     if (!text.startsWith('{') || !text.endsWith('}')) {
-      throw new AppError('OPERATION_UNKNOWN', 'external publisher stdout is not a single JSON object');
+      throw new AppError('OPERATION_UNKNOWN', 'external publisher stdout is not a single JSON object', {
+        details: { stdout: this._redactExternalOutput(stdout) }
+      });
     }
     let parsed;
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw new AppError('OPERATION_UNKNOWN', 'external publisher receipt is invalid JSON');
+      throw new AppError('OPERATION_UNKNOWN', 'external publisher receipt is invalid JSON', {
+        details: { stdout: this._redactExternalOutput(stdout) }
+      });
     }
     if (parsed.ok !== true) {
       throw Object.assign(new AppError('BILI_API_ERROR', 'external publisher reported failure'), { notSent: true });
@@ -839,6 +932,103 @@ export class PublisherModule {
       publish: (await this.store.getSnapshot()).publishes[taskId],
       operation: resolved.operation
     };
+  }
+
+  /**
+   * Local trusted human registers that the manual publish was NOT completed
+   * (I9 / SPEC §15.4): the bundle and state history are retained, the task is
+   * cancelled, and no Operation is fabricated.
+   */
+  async markNotPublished({ taskId, reason = '', note = '' }, humanContext) {
+    if (typeof taskId !== 'string' || taskId === '') throw new AppError('INPUT_REQUIRED', 'taskId is required');
+    const state = await this.store.getSnapshot();
+    const task = state.tasks[taskId];
+    if (!task || task.kind !== 'publish') throw new AppError('FORBIDDEN', 'publish task not found');
+    if (!humanContext?.principal || !humanContext?.proof) {
+      throw new AppError('TRUST_UNAVAILABLE', 'publish void requires a trusted local human');
+    }
+    if (task.input.provider !== 'manual') {
+      throw new AppError('FORBIDDEN', 'publish void is only valid for the Manual provider');
+    }
+    const voidReason = truncateText(reason || '', 500);
+    const voidNote = truncateText(note || '', 500);
+    await this.humanProof.assert(humanContext, {
+      action: 'publish.void',
+      taskId,
+      inputHash: task.inputHash,
+      reason: voidReason,
+      note: voidNote
+    });
+    const existing = state.publishes[taskId];
+    if (existing?.status === 'void') {
+      if (String(existing.voidReason || '') !== voidReason) {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'a different not-published record already exists');
+      }
+      return { task: deepClone(task), publish: deepClone(existing), deduplicated: true };
+    }
+    if (task.status !== 'awaiting_manual') {
+      throw new AppError('FORBIDDEN', `publish task is ${task.status}, not awaiting manual`);
+    }
+    const operations = (task.operationIds || []).map((id) => state.operations[id]).filter(Boolean);
+    if (operations.some((operation) => operation.status === 'unknown' || operation.dispatchAt)) {
+      throw new AppError('OPERATION_UNKNOWN', 'manual void cannot override dispatched/unknown operations');
+    }
+    if ((task.holds || []).some((hold) => hold.status !== 'released')) {
+      throw new AppError('RECOVERY_GAP', 'publish task has an active recovery/migration hold');
+    }
+    return this.store.transaction(async (draft, tx) => {
+      const current = draft.tasks[taskId];
+      const currentPublish = draft.publishes[taskId];
+      if (!currentPublish) throw new AppError('FORBIDDEN', 'publish record not found');
+      if (currentPublish.status === 'void') {
+        return { task: deepClone(current), publish: deepClone(currentPublish), deduplicated: true };
+      }
+      if (current.status !== 'awaiting_manual') {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'publish task status changed during void');
+      }
+      this.taskManager.transition(tx, current, 'cancelled', {
+        provenUndispatched: true,
+        actor: humanContext.principal.id,
+        reason: voidReason || 'local human confirmed the manual publish was not completed',
+        result: {
+          provider: 'manual',
+          published: false,
+          voided: true,
+          reason: voidReason,
+          note: voidNote,
+          bundleTaskId: currentPublish.bundleRef || taskId,
+          operationId: null
+        }
+      });
+      currentPublish.status = 'void';
+      currentPublish.voidedAt = nowIso(this.now);
+      currentPublish.voidReason = voidReason;
+      currentPublish.voidNote = voidNote;
+      currentPublish.updatedAt = nowIso(this.now);
+      currentPublish.statusHistory = [
+        ...(currentPublish.statusHistory || []),
+        {
+          status: 'void',
+          at: currentPublish.voidedAt,
+          actor: humanContext.principal.id,
+          reason: voidReason,
+          note: voidNote
+        }
+      ];
+      tx.appendEvent({
+        type: 'publish.manual.voided',
+        actor: humanContext.principal.id,
+        taskId,
+        accountRef: currentPublish.accountRef || null,
+        payload: {
+          bundleRef: currentPublish.bundleRef || null,
+          operationId: null,
+          reason: voidReason,
+          note: voidNote
+        }
+      });
+      return { task: deepClone(current), publish: deepClone(currentPublish), deduplicated: false };
+    });
   }
 
   async getStatus(taskId) {

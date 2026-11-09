@@ -64,7 +64,8 @@ test('browse -> comment approval -> send -> diary reflects the confirmed busines
   try {
     await coordinator.start();
     const round = await coordinator.runBrowse({ trigger: 'manual' });
-    assert.equal(round.task.status, 'succeeded');
+    assert.equal(round.task.status, 'partial');
+    assert.equal(round.task.isSettled, false);
     const interaction = round.interactions.comments[0];
     assert.equal(interaction.status, 'waiting_approval');
     const commentTask = (await harness.snapshot()).tasks[interaction.taskId];
@@ -85,6 +86,10 @@ test('browse -> comment approval -> send -> diary reflects the confirmed busines
     const sent = await comments.send({ taskId: redraft.task.id, mode: 'go', principal: harness.owner });
     assert.equal(sent.operation.status, 'confirmed');
     assert.equal(adapter.calls.writeComment.length, 1);
+    const settledParent = (await harness.snapshot()).tasks[round.task.id];
+    assert.equal(settledParent.status, 'succeeded');
+    assert.equal(settledParent.isSettled, true);
+    assert.deepEqual(settledParent.result.unresolvedTaskIds, []);
     const generated = await diary.generate({
       date: '2026-11-07',
       scope: 'workspace/workspace_test',

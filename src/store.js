@@ -1,7 +1,9 @@
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { AppError } from './errors.js';
+import { validateTaskCombination } from './task-manager.js';
 import {
   atomicWriteJson,
   deepClone,
@@ -27,6 +29,11 @@ export const DEFAULT_ALLOWED_CAPABILITIES = Object.freeze([
   'publish:external',
   'im'
 ]);
+
+/** Journal backlog gate (SPEC §6.3): new business is paused at this count. */
+export const JOURNAL_PENDING_LIMIT = 10000;
+/** How long an internal capacity scan may reuse its recovery-directory total. */
+export const CAPACITY_CACHE_MS = 30000;
 
 export const RECOVERY_PHASES = Object.freeze([
   'normal',
@@ -112,6 +119,7 @@ export function createInitialState({
     executions: {},
     budgets: {},
     migration: { phase: 'active', id: null },
+    configIntent: null,
     checkpointFence: null,
     artifactPins: {},
     backups: {},
@@ -166,7 +174,188 @@ export function validateState(state) {
     }
   }
   if (!isPlainObject(state.recovery.holdsByScope)) state.recovery.holdsByScope = {};
+
+  // I10: nested fields added by the gateway/modules/prodmig owners are allowed,
+  // but present values are shape-checked so a corrupt write still fails closed.
+  if (state.configIntent !== undefined && state.configIntent !== null) {
+    const intent = state.configIntent;
+    if (
+      !isPlainObject(intent) ||
+      intent.phase !== 'prepared' ||
+      !Number.isSafeInteger(intent.nextVersion) ||
+      intent.nextVersion < 1 ||
+      typeof intent.nextSha256 !== 'string' ||
+      typeof intent.nextFile !== 'string'
+    ) {
+      throw new AppError('STORE_CORRUPTED', 'state.configIntent is invalid');
+    }
+  }
+  validateExtendedNestedState(state);
   return state;
+}
+
+/** Shape checks for the I10 extension fields (fail closed, absent is fine). */
+function validateExtendedNestedState(state) {
+  for (const [key, account] of Object.entries(state.accounts)) {
+    if (!isPlainObject(account)) {
+      throw new AppError('STORE_CORRUPTED', `state.accounts.${key} is invalid`);
+    }
+    for (const field of ['authPausedAt', 'authPausedReason', 'authPausedCode', 'credentialMismatchAt']) {
+      const value = account[field];
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        throw new AppError('STORE_CORRUPTED', `state.accounts.${key}.${field} is invalid`);
+      }
+    }
+  }
+  if (state.migration.lateReceipts !== undefined) {
+    if (!Array.isArray(state.migration.lateReceipts)) {
+      throw new AppError('STORE_CORRUPTED', 'state.migration.lateReceipts is invalid');
+    }
+    for (const receipt of state.migration.lateReceipts) {
+      if (!isPlainObject(receipt)) {
+        throw new AppError('STORE_CORRUPTED', 'state.migration.lateReceipts entry is invalid');
+      }
+    }
+  }
+  for (const field of ['sealedPackage', 'executorStopEvidence', 'releaseCut']) {
+    const value = state.migration[field];
+    if (value !== undefined && value !== null && !isPlainObject(value)) {
+      throw new AppError('STORE_CORRUPTED', `state.migration.${field} is invalid`);
+    }
+  }
+  for (const field of [
+    'executorStopEvidenceHash',
+    'targetStopEvidenceHash',
+    'targetStopEvidence',
+    'targetDataDir',
+    'targetDisabledAt',
+    'reopenedAt'
+  ]) {
+    const value = state.migration[field];
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      throw new AppError('STORE_CORRUPTED', `state.migration.${field} is invalid`);
+    }
+  }
+  if (state.migration.targetDisabled !== undefined && typeof state.migration.targetDisabled !== 'boolean') {
+    throw new AppError('STORE_CORRUPTED', 'state.migration.targetDisabled is invalid');
+  }
+  if (state.migration.unsettledExecutions !== undefined) {
+    if (
+      !Array.isArray(state.migration.unsettledExecutions) ||
+      !state.migration.unsettledExecutions.every((entry) => typeof entry === 'string')
+    ) {
+      throw new AppError('STORE_CORRUPTED', 'state.migration.unsettledExecutions is invalid');
+    }
+  }
+  for (const [index, hold] of (state.recovery.holds || []).entries()) {
+    if (!isPlainObject(hold)) {
+      throw new AppError('STORE_CORRUPTED', `state.recovery.holds[${index}] is invalid`);
+    }
+    if (hold.exposureId !== undefined && hold.exposureId !== null && typeof hold.exposureId !== 'string') {
+      throw new AppError('STORE_CORRUPTED', `state.recovery.holds[${index}].exposureId is invalid`);
+    }
+    if (hold.exposureIds !== undefined) {
+      if (!Array.isArray(hold.exposureIds) || !hold.exposureIds.every((entry) => typeof entry === 'string')) {
+        throw new AppError('STORE_CORRUPTED', `state.recovery.holds[${index}].exposureIds is invalid`);
+      }
+    }
+  }
+  for (const [diaryId, diary] of Object.entries(state.diaries)) {
+    // `__pendingRebuild` is the reserved dirty-marker index, not a diary entry.
+    if (diaryId === '__pendingRebuild') {
+      if (!isPlainObject(diary)) {
+        throw new AppError('STORE_CORRUPTED', 'state.diaries.__pendingRebuild is invalid');
+      }
+      for (const [targetId, marker] of Object.entries(diary)) {
+        if (!isPlainObject(marker)) {
+          throw new AppError('STORE_CORRUPTED', `state.diaries.__pendingRebuild.${targetId} is invalid`);
+        }
+      }
+      continue;
+    }
+    if (!isPlainObject(diary)) {
+      throw new AppError('STORE_CORRUPTED', `state.diaries.${diaryId} is invalid`);
+    }
+    const factsHash = diary.factsHash;
+    if (factsHash !== undefined && factsHash !== null && typeof factsHash !== 'string') {
+      throw new AppError('STORE_CORRUPTED', `state.diaries.${diaryId}.factsHash is invalid`);
+    }
+  }
+  for (const [taskId, task] of Object.entries(state.tasks)) {
+    if (!isPlainObject(task)) {
+      throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId} is invalid`);
+    }
+    validateTaskCombination(task);
+    if (task.hasUnknownOperation !== undefined && typeof task.hasUnknownOperation !== 'boolean') {
+      throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId}.hasUnknownOperation is invalid`);
+    }
+    if (task.revision !== undefined && (!Number.isSafeInteger(task.revision) || task.revision < 1)) {
+      throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId}.revision is invalid`);
+    }
+    if (task.holds !== undefined) {
+      if (!Array.isArray(task.holds)) {
+        throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId}.holds is invalid`);
+      }
+      for (const [index, hold] of task.holds.entries()) {
+        if (!isPlainObject(hold)) {
+          throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId}.holds[${index}] is invalid`);
+        }
+        for (const field of ['releaseNote', 'releasedBy']) {
+          const value = hold[field];
+          if (value !== undefined && value !== null && typeof value !== 'string') {
+            throw new AppError('STORE_CORRUPTED', `state.tasks.${taskId}.holds[${index}].${field} is invalid`);
+          }
+        }
+      }
+    }
+  }
+  for (const [operationId, operation] of Object.entries(state.operations)) {
+    if (!isPlainObject(operation)) {
+      throw new AppError('STORE_CORRUPTED', `state.operations.${operationId} is invalid`);
+    }
+    const revision = operation.credentialRevision;
+    if (revision !== undefined && revision !== null && typeof revision !== 'string') {
+      throw new AppError('STORE_CORRUPTED', `state.operations.${operationId}.credentialRevision is invalid`);
+    }
+  }
+  for (const [executionId, execution] of Object.entries(state.executions)) {
+    if (!isPlainObject(execution)) {
+      throw new AppError('STORE_CORRUPTED', `state.executions.${executionId} is invalid`);
+    }
+    for (const field of [
+      'previousExecutionId',
+      'checkpointRef',
+      'requestId',
+      'workspaceId',
+      'instanceId',
+      'sourceProcessStartedAt'
+    ]) {
+      const value = execution[field];
+      if (value !== undefined && value !== null && typeof value !== 'string') {
+        throw new AppError('STORE_CORRUPTED', `state.executions.${executionId}.${field} is invalid`);
+      }
+    }
+    const sourceOwnerPid = execution.sourceOwnerPid;
+    if (
+      sourceOwnerPid !== undefined &&
+      sourceOwnerPid !== null &&
+      (!Number.isSafeInteger(sourceOwnerPid) || sourceOwnerPid < 0)
+    ) {
+      throw new AppError('STORE_CORRUPTED', `state.executions.${executionId}.sourceOwnerPid is invalid`);
+    }
+    if (execution.inputArtifactRefs !== undefined && !Array.isArray(execution.inputArtifactRefs)) {
+      throw new AppError('STORE_CORRUPTED', `state.executions.${executionId}.inputArtifactRefs is invalid`);
+    }
+  }
+  for (const [importId, entry] of Object.entries(state.artifactPendingImports)) {
+    if (!isPlainObject(entry)) {
+      throw new AppError('STORE_CORRUPTED', `state.artifactPendingImports.${importId} is invalid`);
+    }
+    const fileMode = entry.fileMode;
+    if (fileMode !== undefined && (!Number.isSafeInteger(fileMode) || fileMode < 0)) {
+      throw new AppError('STORE_CORRUPTED', `state.artifactPendingImports.${importId}.fileMode is invalid`);
+    }
+  }
 }
 
 export function validateInstance(instance) {
@@ -232,6 +421,13 @@ export class JsonStore {
     this.now = now;
     this.logger = logger;
     this.hooks = hooks;
+    this.commandContext = new AsyncLocalStorage();
+    this.transactionContext = new AsyncLocalStorage();
+    this.commitObservers = new Set();
+    this.capacityLimits = { warningBytes: 80 * 1024 * 1024, hardBytes: 100 * 1024 * 1024 };
+    this.capacityCacheMs = CAPACITY_CACHE_MS;
+    this._capacityCache = null;
+    this._legacySegmentBytes = new Map();
     this.instanceId = instanceId || null;
     this.readOnly = readOnly;
     this._inTransaction = false;
@@ -375,6 +571,14 @@ export class JsonStore {
         return token;
       } catch (error) {
         if (error.code !== 'EEXIST') {
+          // Windows can report EPERM/EACCES/EBUSY while another process or async
+          // branch is creating/removing the lock (delete-pending state). Treat it
+          // as contention and retry within the deadline instead of failing the
+          // whole transaction with a misleading corruption error.
+          if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) {
+            await sleep(25 + Math.floor(Math.random() * 25));
+            continue;
+          }
           throw new AppError('STORE_CORRUPTED', 'cannot acquire state lock', { cause: error });
         }
         const stole = await this._tryStealStaleLock(lockFile);
@@ -392,6 +596,9 @@ export class JsonStore {
       text = await fsp.readFile(lockFile, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return true;
+      // The lock may be in a transient delete-pending state on Windows; do not
+      // upgrade it to STORE_CORRUPTED, let the acquisition loop retry.
+      if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) return false;
       throw new AppError('STORE_CORRUPTED', 'cannot read existing state lock', { cause: error });
     }
     let lock;
@@ -446,9 +653,13 @@ export class JsonStore {
 
   async transaction(fn, options = {}) {
     if (this.readOnly) throw new AppError('STORE_CORRUPTED', 'store is read-only');
-    if (this._inTransaction) {
+    if (this.transactionContext.getStore()) {
       throw new AppError('STORE_CORRUPTED', 'nested store transaction');
     }
+    return this.transactionContext.run(true, () => this._transaction(fn, options));
+  }
+
+  async _transaction(fn, options) {
     const token = await this._acquireLock();
     this._inTransaction = true;
     this._lockToken = token;
@@ -457,8 +668,31 @@ export class JsonStore {
       const draft = deepClone(state);
       const instance = await this.getInstance();
       if (!instance) throw new AppError('RECOVERY_REQUIRED', 'instance.json is missing');
-      const tx = this._makeContext(draft, instance, options);
+      const capacity = await this.capacityStatus(state, { allowCache: true });
+      const tx = this._makeContext(draft, instance, { ...options, capacity });
       const result = await fn(draft, tx);
+      const context = this.commandContext.getStore();
+      const request = context && draft.requests[context.requestKey];
+      if (request) {
+        const task = draft.tasks[request.taskId || context.taskId] || Object.values(draft.tasks).find(
+          (item) => !state.tasks[item.id] && !item.parentTaskId && item.principalId === request.principalId
+        );
+        if (task) {
+          if (!request.taskId) tx.appendEvent({ type: 'request.accepted', actor: request.principalId, taskId: task.id, payload: { requestKey: request.requestKey, action: request.action } });
+          request.taskId = task.id;
+          request.taskStatus = task.status;
+          request.status = 'accepted';
+          request.result = { taskId: task.id, taskStatus: task.status, executionMode: request.executionMode };
+          if (context.notificationTarget && !task.notificationTarget) task.notificationTarget = deepClone(context.notificationTarget);
+          if (context.inboxKey && draft.inboxKeys[context.inboxKey]) {
+            Object.assign(draft.inboxKeys[context.inboxKey], {
+              status: 'accepted', taskId: task.id,
+              result: { accepted: true, taskId: task.id, status: task.status, executionMode: request.executionMode }
+            });
+          }
+        }
+      }
+      for (const observer of this.commitObservers) observer(tx, state);
       validateState(draft);
       draft.updatedAt = nowIso(this.now);
       await this.hooks.beforeCommit?.({ state: draft, instance });
@@ -513,15 +747,7 @@ export class JsonStore {
         draft.journalPending[eventObject.eventId] = eventObject;
         return deepClone(eventObject);
       },
-      assertBusinessAcceptance: () => {
-        const pending = Object.keys(draft.journalPending).length;
-        if (pending >= 10000) {
-          throw new AppError('JOURNAL_CORRUPTED', 'journal backlog is full; new business is paused', {
-            details: { journalPending: pending }
-          });
-        }
-        return true;
-      },
+      assertBusinessAcceptance: () => store._assertCapacityAcceptance(draft, options.capacity),
       hasPendingCommit: () => {
         if (Object.keys(draft.journalPending).length > 0) return true;
         return Object.values(draft.diaries).some((entry) => entry.pendingCommit);
@@ -546,46 +772,168 @@ export class JsonStore {
     return Buffer.byteLength(text, 'utf8');
   }
 
+  /**
+   * Capacity snapshot (SPEC §6.3). Totals are a fresh scan unless the caller
+   * explicitly opts into the short-lived internal cache used by hot
+   * transaction paths (`allowCache`); `status.capacity` therefore stays exact.
+   */
+  async capacityStatus(state = null, { allowCache = false } = {}) {
+    const snapshot = state || await this.getSnapshot();
+    const stateBytes = Buffer.byteLength(JSON.stringify(snapshot, null, 2)) + 1;
+    let journalBytes = 0;
+    for (const segment of Object.values(snapshot.journalSegments || {})) {
+      if (Number.isSafeInteger(segment.sizeBytes)) {
+        journalBytes += segment.sizeBytes;
+        continue;
+      }
+      // Legacy segments did not persist size; measure once and remember.
+      let cached = this._legacySegmentBytes.get(segment.relativePath);
+      if (cached === undefined) {
+        const file = path.resolve(this.journalDir || path.join(path.dirname(this.file), 'journal'), segment.relativePath);
+        const stat = await fsp.stat(file).catch(() => null);
+        cached = stat?.size ?? this.capacityLimits.hardBytes;
+        if (stat) this._legacySegmentBytes.set(segment.relativePath, cached);
+      }
+      journalBytes += cached;
+    }
+    const nowMs = Date.now();
+    let recoveryBytes;
+    if (allowCache && this._capacityCache && nowMs - this._capacityCache.at <= this.capacityCacheMs) {
+      recoveryBytes = this._capacityCache.recoveryBytes;
+    } else {
+      const recoveryRoot = this.recoveryDir || path.join(path.dirname(this.file), 'recovery');
+      let scanned = 0;
+      const countRecovery = async (dir) => {
+        let entries;
+        try { entries = await fsp.readdir(dir, { withFileTypes: true }); }
+        catch (error) { if (error.code === 'ENOENT') return; scanned += this.capacityLimits.hardBytes; return; }
+        for (const entry of entries) {
+          const file = path.join(dir, entry.name);
+          if (entry.isSymbolicLink()) { scanned += this.capacityLimits.hardBytes; continue; }
+          if (entry.isDirectory()) await countRecovery(file);
+          else if (entry.isFile()) {
+            try { scanned += (await fsp.stat(file)).size; }
+            catch (error) { if (error.code !== 'ENOENT') scanned += this.capacityLimits.hardBytes; }
+          }
+        }
+      };
+      await countRecovery(recoveryRoot);
+      recoveryBytes = scanned;
+      this._capacityCache = { at: nowMs, recoveryBytes };
+    }
+    const totalBytes = stateBytes + journalBytes + recoveryBytes;
+    return {
+      stateBytes,
+      journalBytes,
+      recoveryBytes,
+      totalBytes,
+      businessKeyBytes: jsonByteLength(snapshot.businessKeys),
+      pendingCount: Object.keys(snapshot.journalPending).length,
+      pendingLimit: JOURNAL_PENDING_LIMIT,
+      ...this.capacityLimits,
+      status: totalBytes >= this.capacityLimits.hardBytes
+        ? 'blocked'
+        : totalBytes >= this.capacityLimits.warningBytes
+          ? 'warning'
+          : 'healthy'
+    };
+  }
+
+  _assertCapacityAcceptance(stateLike, capacity = null) {
+    if (
+      (capacity && capacity.totalBytes >= this.capacityLimits.hardBytes) ||
+      jsonByteLength(stateLike) >= this.capacityLimits.hardBytes
+    ) {
+      throw new AppError('STORE_CORRUPTED', 'metadata capacity limit reached; only maintenance and settlement are allowed', {
+        details: { reason: 'capacity_limit', ...(capacity || {}) }
+      });
+    }
+    const pending = Object.keys(stateLike?.journalPending || {}).length;
+    if (pending >= JOURNAL_PENDING_LIMIT) {
+      throw new AppError('JOURNAL_CORRUPTED', 'journal backlog is full; new business is paused', {
+        details: { journalPending: pending }
+      });
+    }
+    return true;
+  }
+
+  /**
+   * Public capacity gate for callers that start business outside a transaction
+   * (e.g. diary.generate must call this before writing). Inside a transaction
+   * use `tx.assertBusinessAcceptance()` so the draft size is included.
+   */
+  async assertBusinessAcceptance(state = null) {
+    const snapshot = state || await this.getSnapshot();
+    const capacity = await this.capacityStatus(snapshot);
+    return this._assertCapacityAcceptance(snapshot, capacity);
+  }
+
   async journalPendingCount() {
     const state = await this.getSnapshot();
     return Object.keys(state.journalPending).length;
   }
 
-  /** Remove only settled, unreferenced hot records. Permanent facts survive. */
+  /**
+   * Remove only settled, unreferenced hot records. Permanent facts survive.
+   * Any task/operation referenced by an unsettled task, an active hold, an
+   * approval, an execution, a request, an outbox item or a production/publish
+   * record is never evicted (SPEC §6.2). Exposed for the maintenance loop;
+   * this method never runs on its own.
+   */
   async prune({ maxTasks = 500, maxOperations = 5000 } = {}) {
     return this.transaction(async (draft, tx) => {
-      const referencedTasks = new Set();
-      const referencedOps = new Set();
+      const protectedTasks = new Set();
+      const protectedOps = new Set();
+      const protectTask = (taskId) => {
+        if (taskId) protectedTasks.add(taskId);
+      };
+      const protectOperation = (operationId) => {
+        if (operationId) protectedOps.add(operationId);
+      };
+
       for (const task of Object.values(draft.tasks)) {
         if (!task.isSettled) {
-          referencedTasks.add(task.id);
-          for (const opId of task.pendingOperationIds || []) referencedOps.add(opId);
+          protectTask(task.id);
+          for (const opId of task.pendingOperationIds || []) protectOperation(opId);
+          for (const opId of task.operationIds || []) protectOperation(opId);
         }
-        for (const child of task.childTaskIds || []) referencedTasks.add(child);
-        if (task.parentTaskId) referencedTasks.add(task.parentTaskId);
+        for (const child of task.childTaskIds || []) protectTask(child);
+        protectTask(task.parentTaskId);
+        if ((task.holds || []).some((hold) => hold.status !== 'released')) protectTask(task.id);
       }
+      for (const approval of Object.values(draft.approvals)) protectTask(approval.taskId);
       for (const outbox of Object.values(draft.outbox)) {
-        if (!['sent', 'not_sent', 'suppressed'].includes(outbox.status)) {
-          if (outbox.taskId) referencedTasks.add(outbox.taskId);
+        protectTask(outbox.taskId);
+        protectOperation(outbox.operationId);
+      }
+      for (const request of Object.values(draft.requests)) protectTask(request.taskId);
+      for (const execution of Object.values(draft.executions)) {
+        protectTask(execution.taskId);
+        protectOperation(execution.operationId);
+      }
+      for (const record of [...Object.values(draft.productions || {}), ...Object.values(draft.publishes || {})]) {
+        if (!isPlainObject(record)) continue;
+        protectTask(record.taskId);
+        protectOperation(record.operationId);
+      }
+      for (const hold of draft.recovery?.holds || []) {
+        if (isPlainObject(hold)) protectTask(hold.taskId);
+      }
+      for (const operation of Object.values(draft.operations)) {
+        for (const taskId of operation.taskIds || []) {
+          if (protectedTasks.has(taskId)) protectOperation(operation.id);
         }
       }
-      for (const request of Object.values(draft.requests)) {
-        if (request.taskId) referencedTasks.add(request.taskId);
+      for (const operation of Object.values(draft.operations)) {
+        if (!protectedOps.has(operation.id)) continue;
+        for (const taskId of operation.taskIds || []) protectTask(taskId);
       }
-      for (const approval of Object.values(draft.approvals)) {
-        if (!approval.decidedAt || approval.decision === 'pending') referencedTasks.add(approval.taskId);
-      }
-      for (const op of Object.values(draft.operations)) {
-        if (!['confirmed', 'failed', 'not_sent', 'cancelled'].includes(op.status)) {
-          referencedOps.add(op.id);
-          for (const taskId of op.taskIds || []) referencedTasks.add(taskId);
-        }
-      }
+
       const tasks = Object.values(draft.tasks).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
       let removedTasks = 0;
       for (const task of tasks) {
         if (Object.keys(draft.tasks).length - removedTasks <= maxTasks) break;
-        if (!task.isSettled || referencedTasks.has(task.id)) continue;
+        if (!task.isSettled || protectedTasks.has(task.id)) continue;
         delete draft.tasks[task.id];
         removedTasks += 1;
       }
@@ -594,7 +942,7 @@ export class JsonStore {
       for (const op of operations) {
         if (Object.keys(draft.operations).length - removedOps <= maxOperations) break;
         if (!['confirmed', 'failed', 'not_sent', 'cancelled'].includes(op.status)) continue;
-        if (referencedOps.has(op.id)) continue;
+        if (protectedOps.has(op.id)) continue;
         delete draft.operations[op.id];
         removedOps += 1;
       }

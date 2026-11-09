@@ -71,6 +71,23 @@ test('sensitive CLI actions fail closed without an interactive TTY', async () =>
   }
 });
 
+test('help advertises unified command entry and new management commands', async () => {
+  const stdout = collector();
+  const code = await main(['--help'], { stdout, stderr: collector() });
+  assert.equal(code, 0);
+  const text = stdout.text();
+  for (const fragment of [
+    'account resume',
+    'publish void',
+    'operation cancel',
+    'release-hold',
+    'preserve',
+    '--confirm'
+  ]) {
+    assert.ok(text.includes(fragment), `help must mention ${fragment}`);
+  }
+});
+
 test('unknown command is a usage error after runtime initialization', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cli-'));
   try {

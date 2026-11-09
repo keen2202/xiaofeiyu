@@ -94,3 +94,133 @@ test('adapter refuses a write context for a different account', async () => {
     await harness.cleanup();
   }
 });
+
+test('publish metadata limits are declared and validated by the adapter (I8)', async () => {
+  const harness = await createHarness();
+  try {
+    await bindMockAccount(harness);
+    const adapter = new BilibiliPlatformAdapter({
+      client: new BilibiliClient({ config: harness.config, credentials: {} }),
+      store: harness.store,
+      configService: harness.configService,
+      rateLimiter: harness.rateLimiter,
+      now: harness.now
+    });
+    assert.deepEqual(adapter.capabilities['publish.manual'].limits, {
+      nativeUpload: false,
+      titleMaxBytes: 80,
+      descriptionMaxBytes: 2000,
+      tagsMax: 12,
+      tagLengthMax: 20,
+      tidRequired: true
+    });
+    const normalized = await adapter.validatePublishMetadata({
+      title: ' 标题 ',
+      description: ' 简介 ',
+      tags: [' a ', 'a', ''],
+      platformData: { tid: 1, extra: 'kept' }
+    });
+    assert.deepEqual(normalized, {
+      title: '标题',
+      description: '简介',
+      tags: ['a'],
+      platformData: { tid: 1, extra: 'kept' }
+    });
+    const field = (expected) => (error) =>
+      error.code === 'PUBLISH_INPUT_INVALID' && error.details.field === expected;
+    await assert.rejects(() => adapter.validatePublishMetadata(null), field('metadata'));
+    await assert.rejects(
+      () => adapter.validatePublishMetadata({ title: ' '.repeat(3), platformData: { tid: 1 } }),
+      field('metadata.title')
+    );
+    await assert.rejects(
+      () => adapter.validatePublishMetadata({ title: 'x'.repeat(81), platformData: { tid: 1 } }),
+      field('metadata.title')
+    );
+    // The declared limit is bytes, so CJK titles are bounded by UTF-8 bytes.
+    await assert.rejects(
+      () => adapter.validatePublishMetadata({ title: '中'.repeat(27), platformData: { tid: 1 } }),
+      field('metadata.title')
+    );
+    await assert.rejects(
+      () =>
+        adapter.validatePublishMetadata({
+          title: 'ok',
+          description: 'x'.repeat(2001),
+          platformData: { tid: 1 }
+        }),
+      field('metadata.description')
+    );
+    await assert.rejects(
+      () => adapter.validatePublishMetadata({ title: 'ok' }),
+      field('metadata.platformData.tid')
+    );
+    await assert.rejects(
+      () => adapter.validatePublishMetadata({ title: 'ok', platformData: { tid: 0 } }),
+      field('metadata.platformData.tid')
+    );
+    await assert.rejects(
+      () =>
+        adapter.validatePublishMetadata({
+          title: 'ok',
+          tags: Array.from({ length: 13 }, (_, index) => `tag${index}`),
+          platformData: { tid: 1 }
+        }),
+      field('metadata.tags')
+    );
+    await assert.rejects(
+      () =>
+        adapter.validatePublishMetadata({
+          title: 'ok',
+          tags: ['x'.repeat(21)],
+          platformData: { tid: 1 }
+        }),
+      field('metadata.tags')
+    );
+    assert.doesNotThrow(() =>
+      adapter.validatePublishMetadata({ title: '中'.repeat(26), platformData: { tid: 1 } })
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test('adapter verifies mutual follow once and passes mutualVerified to the client (G-P1-8)', async () => {
+  const harness = await createHarness();
+  try {
+    await bindMockAccount(harness);
+    const calls = { relation: [], sent: [] };
+    const client = {
+      async relation(mid) {
+        calls.relation.push(mid);
+        return { mutual: true, attribute: 6 };
+      },
+      async sendDirectMessage(args) {
+        calls.sent.push(args);
+        return { externalId: 'msg_1' };
+      }
+    };
+    const adapter = new BilibiliPlatformAdapter({
+      client,
+      store: harness.store,
+      configService: harness.configService,
+      rateLimiter: harness.rateLimiter,
+      now: harness.now
+    });
+    await adapter.sendDirectMessage({
+      recipientMid: 2002,
+      text: 'hi',
+      operationContext: { accountRef: { platform: 'bilibili', accountId: '1001' } }
+    });
+    assert.deepEqual(calls.relation, [2002]);
+    assert.equal(calls.sent.length, 1);
+    assert.equal(calls.sent[0].mutualVerified, true);
+    assert.equal(calls.sent[0].requireMutual, true);
+    // The dead adapter-level read/risk shims were removed; wiring is owned by
+    // the runtime so there is only one implementation (G-P2-6).
+    assert.equal(adapter._beforeRead, undefined);
+    assert.equal(adapter._onRisk, undefined);
+  } finally {
+    await harness.cleanup();
+  }
+});

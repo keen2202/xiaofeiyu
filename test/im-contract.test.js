@@ -197,6 +197,23 @@ test('accepted command enqueues a reply outbox and delivery unknown never reruns
   }
 });
 
+test('IM action whitelist rejects task resume and platform DM', async () => {
+  const { harness, bridge, calls } = await setup();
+  try {
+    await assert.rejects(
+      () => bridge.ingest(event({ eventId: 'resume', command: { action: 'task.resume', input: { taskId: 't1' }, mode: 'go' } }), trusted),
+      (error) => error.code === 'FORBIDDEN'
+    );
+    await assert.rejects(
+      () => bridge.ingest(event({ eventId: 'dm2', command: { action: 'dm.send', input: {}, mode: 'dry' } }), trusted),
+      (error) => error.code === 'FORBIDDEN'
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 test('IM disabled reports feature disabled before any ingest', async () => {
   const { harness, bridge } = await setup({ im: { enabled: false } });
   try {

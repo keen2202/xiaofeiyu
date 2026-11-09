@@ -178,11 +178,14 @@ export function sanitizeStateForBackup(state) {
   clone.outbox = Object.fromEntries(
     Object.entries(clone.outbox || {}).map(([id, notification]) => [
       id,
-      {
-        ...notification,
-        status: ['pending', 'sending'].includes(notification.status) ? 'suppressed' : notification.status,
-        suppressionReason: ['pending', 'sending'].includes(notification.status) ? 'backup_snapshot' : notification.suppressionReason
-      }
+      ['pending', 'sending'].includes(notification.status)
+        ? {
+            ...notification,
+            capturedStatus: notification.capturedStatus || notification.status,
+            status: 'suppressed',
+            suppressionReason: 'backup_snapshot'
+          }
+        : notification
     ])
   );
   clone.secretsExcluded = true;
@@ -318,6 +321,8 @@ export class BackupService {
     journalDir = null,
     dataDir = null,
     humanProof = null,
+    prepareCapture = null,
+    statfs = null,
     now = () => new Date(),
     hooks = {},
     logger
@@ -329,10 +334,14 @@ export class BackupService {
     this.journalDir = journalDir;
     this.dataDir = dataDir;
     this.humanProof = humanProof;
+    this.prepareCapture = prepareCapture;
+    this.statfs = statfs || ((target) => fsp.statfs(target));
     this.now = now;
     this.hooks = hooks;
     this.logger = logger;
     this._indexLock = null;
+    this._indexLockTimeoutMs = 5000;
+    this._indexStaleMs = 15000;
   }
 
   async _withIndexLock(fn) {
@@ -352,6 +361,98 @@ export class BackupService {
     }
   }
 
+  _indexLockFile(policy) {
+    return path.join(policy.destinationRoot, '.index.lock');
+  }
+
+  async _acquireIndexFileLock(policy) {
+    await ensureDir(policy.destinationRoot);
+    const lockFile = this._indexLockFile(policy);
+    const token = randomToken(12);
+    const deadline = Date.now() + this._indexLockTimeoutMs;
+    while (Date.now() <= deadline) {
+      try {
+        const handle = await fsp.open(lockFile, 'wx', 0o600);
+        try {
+          await handle.writeFile(
+            JSON.stringify({
+              ownerPid: process.pid,
+              processStartedAt: processStartIso(),
+              token,
+              createdAt: nowIso(this.now)
+            }),
+            'utf8'
+          );
+          await handle.sync();
+        } finally {
+          await handle.close().catch(() => {});
+        }
+        return token;
+      } catch (error) {
+        if (error.code !== 'EEXIST') {
+          throw new AppError('BACKUP_INVALID', 'cannot acquire the backup index file lock', { cause: error });
+        }
+        const stolen = await this._tryStealIndexLock(lockFile);
+        if (!stolen) {
+          await new Promise((resolve) => setTimeout(resolve, 20 + Math.floor(Math.random() * 30)));
+        }
+      }
+    }
+    throw new AppError('BACKUP_INVALID', 'backup index is locked by another process', {
+      details: { lockFile, timeoutMs: this._indexLockTimeoutMs }
+    });
+  }
+
+  async _tryStealIndexLock(lockFile) {
+    let raw;
+    try {
+      raw = await fsp.readFile(lockFile, 'utf8');
+    } catch {
+      return true;
+    }
+    let lock;
+    try {
+      lock = JSON.parse(raw);
+    } catch {
+      // A malformed lock cannot establish ownership; never steal it.
+      return false;
+    }
+    if (!lock || !Number.isInteger(lock.ownerPid) || typeof lock.token !== 'string') return false;
+    const ageMs = Date.now() - Date.parse(lock.createdAt || '');
+    if (!Number.isFinite(ageMs) || ageMs < 1000) return false;
+    const alive = isProcessAlive(lock.ownerPid);
+    let pidReused = false;
+    if (alive) {
+      const actualStart = getProcessStartMs(lock.ownerPid);
+      const recordedStart = Date.parse(lock.processStartedAt || '');
+      pidReused =
+        actualStart !== null &&
+        Number.isFinite(recordedStart) &&
+        Math.abs(actualStart - recordedStart) > 5000;
+    }
+    if (alive && !pidReused) return false;
+    const staleName = `${lockFile}.stale.${process.pid}.${randomToken(4)}`;
+    try {
+      await fsp.rename(lockFile, staleName);
+    } catch {
+      return false;
+    }
+    await fsp.rm(staleName, { force: true }).catch(() => {});
+    return true;
+  }
+
+  async _releaseIndexFileLock(policy, token) {
+    const lockFile = this._indexLockFile(policy);
+    try {
+      const raw = await fsp.readFile(lockFile, 'utf8');
+      const lock = JSON.parse(raw);
+      if (lock.token !== token) return;
+      await fsp.rm(lockFile, { force: true });
+    } catch {
+      // A missing or replaced lock is not ours to remove.
+    }
+  }
+
   async _policy({ required = true } = {}) {
     const policy = await this.policyService.load({ missingOk: !required });
     if (!policy && required) throw new AppError('BACKUP_UNPROTECTED', 'backup policy is not configured');
@@ -364,7 +465,7 @@ export class BackupService {
 
   async _readIndex(policy) {
     const file = this._indexFile(policy);
-    if (!(await pathExists(file))) return { schemaVersion: 1, backups: {}, updatedAt: null };
+    if (!(await pathExists(file))) return { schemaVersion: 1, version: 0, backups: {}, updatedAt: null };
     let index;
     try {
       index = JSON.parse(await fsp.readFile(file, 'utf8'));
@@ -377,10 +478,48 @@ export class BackupService {
     return index;
   }
 
-  async _writeIndex(policy, index) {
+  async _writeIndex(policy, index, { expectedVersion = null } = {}) {
     await ensureDir(policy.destinationRoot);
+    if (expectedVersion !== null) {
+      const onDisk = await this._readIndex(policy);
+      const diskVersion = Number.isSafeInteger(onDisk.version) ? onDisk.version : 0;
+      if (diskVersion !== expectedVersion) {
+        throw new AppError('BACKUP_INVALID', 'backup index version conflict (CAS)', {
+          details: { expectedVersion, diskVersion }
+        });
+      }
+    }
+    index.version = (Number.isSafeInteger(index.version) ? index.version : 0) + 1;
     index.updatedAt = nowIso(this.now);
     await atomicWriteJson(this._indexFile(policy), index);
+  }
+
+  /**
+   * Serialized (in-process + cross-process file lock) index read-modify-write
+   * with a version CAS; a concurrent writer triggers one CAS retry.
+   */
+  async _mutateIndex(policy, mutator, { attempts = 2 } = {}) {
+    return this._withIndexLock(async () => {
+      const token = await this._acquireIndexFileLock(policy);
+      try {
+        let lastError = null;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const index = await this._readIndex(policy);
+          const version = Number.isSafeInteger(index.version) ? index.version : 0;
+          const result = await mutator(index);
+          try {
+            await this._writeIndex(policy, index, { expectedVersion: version });
+            return result;
+          } catch (error) {
+            if (error.code !== 'BACKUP_INVALID' || error.details?.expectedVersion === undefined) throw error;
+            lastError = error;
+          }
+        }
+        throw lastError || new AppError('BACKUP_INVALID', 'backup index update conflict');
+      } finally {
+        await this._releaseIndexFileLock(policy, token);
+      }
+    });
   }
 
   async _requireHuman(humanContext, binding) {
@@ -412,6 +551,31 @@ export class BackupService {
       }
     }
     return state;
+  }
+
+  async _assertDestinationCapacity(policy, kind, state) {
+    const stateBytes = Buffer.byteLength(JSON.stringify(state || {}));
+    let mediaBytes = 0;
+    if (kind === 'full') {
+      for (const artifact of Object.values(state?.artifacts || {})) {
+        if (Number.isSafeInteger(artifact.sizeBytes)) mediaBytes += artifact.sizeBytes;
+      }
+    }
+    const requiredBytes = Math.ceil((stateBytes + mediaBytes) * 1.2) + 8 * 1024 * 1024;
+    let stats = null;
+    try {
+      stats = await this.statfs(policy.destinationRoot);
+    } catch {
+      return true;
+    }
+    const freeBytes = Number(stats?.bavail) * Number(stats?.bsize);
+    if (!Number.isFinite(freeBytes)) return true;
+    if (freeBytes < requiredBytes) {
+      throw new AppError('BACKUP_INVALID', 'backup destination does not have enough free space', {
+        details: { freeBytes, requiredBytes, kind }
+      });
+    }
+    return true;
   }
 
   async create({ kind = 'ledger', requestId }, humanContext) {
@@ -449,7 +613,14 @@ export class BackupService {
       throw new AppError('BACKUP_UNPROTECTED', 'scheduled backup requires an explicitly enabled policy');
     }
     const actor = scheduled ? 'system:backup-scheduler' : humanContext.principal.id;
+    if (typeof this.prepareCapture === 'function') {
+      // Complete provable multi-file commits before the capture boundary; the
+      // hook is injected by the runtime and must be read-only outside recovery.
+      await this.prepareCapture({ kind, requestId, scheduled });
+    }
     await this._assertGateForBackup();
+    const preCaptureState = await this.store.getSnapshot();
+    await this._assertDestinationCapacity(policy, kind, preCaptureState);
     const index = await this._readIndex(policy);
     let effectiveRequestId = requestId;
     const existing = Object.values(index.backups).find((entry) => entry.requestId === requestId);
@@ -470,6 +641,27 @@ export class BackupService {
       await this._assertGateForBackupInTransaction(draft);
       const cutAt = nowIso(this.now);
       const sanitized = sanitizeStateForBackup(draft);
+      const pendingExcluded = [
+        ...Object.keys(sanitized.artifactPendingImports || {}).map((id) => `artifactPendingImport:${id}`),
+        ...Object.values(sanitized.diaries || {})
+          .filter((entry) => entry.pendingCommit)
+          .map((entry) => `diaryPendingCommit:${entry.diaryId || entry.date || 'unknown'}`)
+      ];
+      const recoveryState = sanitized.recovery || null;
+      const parentRecovery =
+        recoveryState?.id
+          ? {
+              caseId: recoveryState.id,
+              revision: recoveryState.revision || 0,
+              phase: recoveryState.phase || null,
+              parentBackupId: recoveryState.parent?.backupId || null,
+              parentSnapshotHash: recoveryState.parent?.snapshotHash || null,
+              evidenceRefs: (recoveryState.holds || [])
+                .flatMap((hold) => hold.evidenceRefs || [])
+                .map((ref) => (typeof ref === 'string' ? ref : ref?.id))
+                .filter(Boolean)
+            }
+          : null;
       const fence = {
         id: `fence_${backupId}`,
         kind: 'backup',
@@ -498,6 +690,8 @@ export class BackupService {
         state: sanitized,
         cutAt,
         fence,
+        pendingExcluded,
+        parentRecovery,
         sourceStateHash: computeSourceStateHash({ state: sanitized, cutAt }),
         configRevision: deepClone(sanitized.configRevision),
         timeZone: sanitized.timeZone || 'Asia/Shanghai',
@@ -625,6 +819,8 @@ export class BackupService {
         ],
         failureDomain: policy.failureDomain,
         failureDomainVerifiedBy: policy.verifiedBy,
+        pendingExcluded: capture.pendingExcluded || [],
+        parentRecovery: capture.parentRecovery || null,
         createdAt: startedAt,
         completedAt: nowIso(this.now),
         files
@@ -671,15 +867,16 @@ export class BackupService {
         failureDomainVerifiedBy: manifest.failureDomainVerifiedBy,
         journalCoverage: manifest.journalCoverage,
         mediaCoverage: manifest.mediaCoverage,
+        pendingExcluded: manifest.pendingExcluded || [],
+        parentRecovery: manifest.parentRecovery || null,
         files: manifest.files.length,
         verifiedAt: nowIso(this.now),
         restoreTestedAt: null,
         pinned: false
       };
-      const savedEntry = await this._withIndexLock(async () => {
-        const latestIndex = await this._readIndex(policy);
+      const savedEntry = await this._mutateIndex(policy, (latestIndex) => {
         latestIndex.backups[backupId] = indexEntry;
-        await this._writeIndex(policy, latestIndex);
+        latestIndex.mediaUnprotected = latestIndex.mediaUnprotected === true;
         return latestIndex.backups[backupId];
       });
       await this.store.transaction(async (draft) => {
@@ -702,15 +899,14 @@ export class BackupService {
         };
       }).catch(() => {});
       try {
-        await this._withIndexLock(async () => {
-          const failedIndex = await this._readIndex(policy);
+        await this._mutateIndex(policy, (failedIndex) => {
           failedIndex.lastError = {
             backupId,
             at: nowIso(this.now),
             code: error.code || 'BACKUP_INVALID',
             message: error.message
           };
-          await this._writeIndex(policy, failedIndex);
+          return true;
         });
       } catch {
         // Keep the original error.
@@ -753,26 +949,25 @@ export class BackupService {
     const dir = path.join(policy.destinationRoot, 'backups', backupId);
     try {
       const result = await verifyBackupDirectory(dir, { now: this.now });
-      const entry = await this._withIndexLock(async () => {
-        const latestIndex = await this._readIndex(policy);
+      const entry = await this._mutateIndex(policy, (latestIndex) => {
         const current = latestIndex.backups[backupId];
         if (!current) throw new AppError('BACKUP_INVALID', 'backup disappeared during verify');
         current.status = 'verified';
         current.verifiedAt = nowIso(this.now);
         current.mediaCoverage = result.manifest.mediaCoverage;
         latestIndex.lastError = null;
-        await this._writeIndex(policy, latestIndex);
+        latestIndex.mediaUnprotected = !Object.values(latestIndex.backups).some(
+          (point) => point.status === 'verified' && point.kind === 'full'
+        );
         return current;
       });
       return { ...entry, ...result, verified: true };
     } catch (error) {
-      const entry = await this._withIndexLock(async () => {
-        const latestIndex = await this._readIndex(policy);
+      const entry = await this._mutateIndex(policy, (latestIndex) => {
         const current = latestIndex.backups[backupId];
         if (!current) return { backupId, status: 'invalid' };
         current.status = 'invalid';
         latestIndex.lastError = { backupId, at: nowIso(this.now), code: error.code, message: error.message };
-        await this._writeIndex(policy, latestIndex);
         return current;
       });
       return { ...entry, verified: false, error: { code: error.code, message: error.message } };
@@ -810,11 +1005,10 @@ export class BackupService {
         error: result.error || null
       });
     }
-    await this._withIndexLock(async () => {
-      const latestIndex = await this._readIndex(policy);
+    await this._mutateIndex(policy, (latestIndex) => {
       latestIndex.lastDailyVerifyDate = today;
       latestIndex.lastDailyVerifyAt = nowIso(this.now);
-      await this._writeIndex(policy, latestIndex);
+      return true;
     });
     return { date: today, checked, skipped: false };
   }
@@ -853,8 +1047,7 @@ export class BackupService {
     const policy = await this._policy({ required: false });
     if (!policy) return { recorded: false, reason: 'policy_not_configured' };
     const testedAt = nowIso(this.now);
-    const result = await this._withIndexLock(async () => {
-      const index = await this._readIndex(policy);
+    const result = await this._mutateIndex(policy, (index) => {
       const entry = index.backups[backupId];
       if (!entry) return { recorded: false, reason: 'unknown_backup' };
       if (entry.status !== 'verified') {
@@ -872,7 +1065,6 @@ export class BackupService {
         recordedAt: testedAt,
         recordedBy
       };
-      await this._writeIndex(policy, index);
       return {
         recorded: true,
         deduplicated: false,
@@ -956,7 +1148,9 @@ export class BackupService {
         : null,
       lastDailyVerifyDate: index.lastDailyVerifyDate || null,
       lastDailyVerifyAt: index.lastDailyVerifyAt || null,
-      lastError: index.lastError || null
+      lastError: index.lastError || null,
+      mediaUnprotected: latestFull === null,
+      mediaUnprotectedReason: latestFull === null ? 'no_verified_full_recovery_point' : null
     };
   }
 
@@ -975,7 +1169,14 @@ export class BackupService {
         .sort((a, b) => String(b.cutAt).localeCompare(String(a.cutAt)));
       if (points.length === 0) return { status: 'unprotected', reason: 'no_verified_recovery_point' };
       const latest = points[0];
+      const latestFull = points.find((entry) => entry.kind === 'full') || null;
       const ageMs = Math.max(0, this.now().getTime() - Date.parse(latest.cutAt));
+      const mediaStatus = {
+        mediaUnprotected: latestFull === null,
+        mediaUnprotectedReason: latestFull === null ? 'no_verified_full_recovery_point' : null,
+        latestFullBackupId: latestFull?.backupId || null,
+        latestFullCutAt: latestFull?.cutAt || null
+      };
       if (ageMs > policy.maxPointAgeMinutes * 60 * 1000) {
         return {
           status: 'degraded',
@@ -983,7 +1184,8 @@ export class BackupService {
           backupId: latest.backupId,
           cutAt: latest.cutAt,
           ageMs,
-          maxPointAgeMinutes: policy.maxPointAgeMinutes
+          maxPointAgeMinutes: policy.maxPointAgeMinutes,
+          ...mediaStatus
         };
       }
       return {
@@ -993,11 +1195,44 @@ export class BackupService {
         cutAt: latest.cutAt,
         ageMs,
         tier: latest.kind,
-        mediaCoverage: latest.mediaCoverage
+        mediaCoverage: latest.mediaCoverage,
+        ...mediaStatus
       };
     } catch (error) {
       return { status: 'invalid', reason: error.code || 'BACKUP_INVALID', message: error.message };
     }
+  }
+
+  async _activeRecoveryRefs() {
+    const backupIds = new Set();
+    let caseId = null;
+    const candidates = [];
+    if (this.recoveryDir) candidates.push(path.join(this.recoveryDir, 'recovery.json'));
+    if (this.dataDir) candidates.push(path.join(this.dataDir, 'recovery', 'recovery.json'));
+    for (const file of candidates) {
+      if (!(await pathExists(file))) continue;
+      let recoveryCase;
+      try {
+        recoveryCase = JSON.parse(await fsp.readFile(file, 'utf8'));
+      } catch {
+        continue;
+      }
+      if (!recoveryCase?.id) continue;
+      caseId = recoveryCase.id;
+      for (const backupId of [
+        recoveryCase.backupRef?.backupId,
+        recoveryCase.parentHistory?.backupId,
+        ...(recoveryCase.evidenceRefs || []).map((ref) => ref.backupId),
+        ...(recoveryCase.decisions || []).map((decision) => decision.recoveryPointBackupId),
+        ...(recoveryCase.holds || []).flatMap((hold) => (hold.evidenceRefs || []).map((ref) => ref.backupId))
+      ]) {
+        if (typeof backupId === 'string' && backupId !== '') backupIds.add(backupId);
+      }
+      for (const evidence of recoveryCase.authorizationPreconditions || []) {
+        if (typeof evidence.recoveryPointBackupId === 'string') backupIds.add(evidence.recoveryPointBackupId);
+      }
+    }
+    return { caseId, backupIds };
   }
 
   async planPrune() {
@@ -1031,7 +1266,12 @@ export class BackupService {
     for (const entry of verified) {
       if (entry.pinned) keep.add(entry.backupId);
     }
+    const activeRefs = await this._activeRecoveryRefs();
+    for (const backupId of activeRefs.backupIds) {
+      if (verified.some((entry) => entry.backupId === backupId)) keep.add(backupId);
+    }
     const deleteEntries = verified.filter((entry) => !keep.has(entry.backupId));
+    const retainedFulls = verified.filter((entry) => keep.has(entry.backupId) && entry.kind === 'full');
     const plan = {
       schemaVersion: 1,
       planId: null,
@@ -1047,10 +1287,14 @@ export class BackupService {
       protected: {
         lastLedger: lastLedger?.backupId || null,
         lastFull: lastFull?.backupId || null,
-        pinned: verified.filter((entry) => entry.pinned).map((entry) => entry.backupId)
+        pinned: verified.filter((entry) => entry.pinned).map((entry) => entry.backupId),
+        recoveryCaseId: activeRefs.caseId,
+        recoveryPins: [...activeRefs.backupIds].sort()
       },
       mediaAfterPrune: {
-        fullRetained: Boolean(lastFull)
+        fullRetained: retainedFulls.length > 0,
+        retainedFullIds: retainedFulls.map((entry) => entry.backupId),
+        completeCoverage: retainedFulls.some((entry) => entry.mediaCoverage?.complete === true)
       }
     };
     plan.planId = sha256Hex(
@@ -1080,14 +1324,17 @@ export class BackupService {
     if (recomputed.planId !== planId) {
       throw new AppError('BACKUP_INVALID', 'prune plan is stale; re-plan before deleting');
     }
-    return this._withIndexLock(async () => {
-      const index = await this._readIndex(policy);
+    return this._mutateIndex(policy, async (index) => {
+      const activePins = new Set(plan.protected.recoveryPins || recomputed.protected.recoveryPins || []);
       const deleted = [];
       for (const entry of plan.delete) {
         const backup = index.backups[entry.backupId];
         if (!backup || backup.status !== 'verified') continue;
         if (entry.backupId === plan.protected.lastFull || entry.backupId === plan.protected.lastLedger) {
           throw new AppError('BACKUP_INVALID', 'prune plan attempted to delete a protected last point');
+        }
+        if (activePins.has(entry.backupId)) {
+          throw new AppError('BACKUP_INVALID', 'prune plan attempted to delete a recovery-referenced point');
         }
         const dir = path.join(policy.destinationRoot, 'backups', entry.backupId);
         if (!ensureWithin(path.join(policy.destinationRoot, 'backups'), dir)) {
@@ -1097,8 +1344,21 @@ export class BackupService {
         delete index.backups[entry.backupId];
         deleted.push(entry.backupId);
       }
-      await this._writeIndex(policy, index);
-      return { deleted, planId, kept: plan.keep.length };
+      const remainingVerified = Object.values(index.backups).filter((entry) => entry.status === 'verified');
+      const retainedFulls = remainingVerified.filter((entry) => entry.kind === 'full');
+      const mediaUnprotected = retainedFulls.length === 0;
+      index.mediaUnprotected = mediaUnprotected;
+      index.mediaUnprotectedReason = mediaUnprotected ? 'no_verified_full_recovery_point' : null;
+      return {
+        deleted,
+        planId,
+        kept: plan.keep.length,
+        mediaCoverage: {
+          fullRetained: retainedFulls.length > 0,
+          retainedFullIds: retainedFulls.map((entry) => entry.backupId),
+          mediaUnprotected
+        }
+      };
     });
   }
 }
@@ -1450,6 +1710,191 @@ export class RecoveryService {
     return this.humanProof.assert(humanContext, binding);
   }
 
+  _normalizeCoveredRange(range) {
+    if (range === null || range === undefined) return null;
+    if (typeof range !== 'object') throw new AppError('RECOVERY_GAP', 'coveredRange must be an object');
+    const startAt = range.startAt ?? null;
+    const endAt = range.endAt ?? null;
+    const startMs = startAt === null ? null : Date.parse(startAt);
+    const endMs = endAt === null ? null : Date.parse(endAt);
+    if (startAt !== null && !Number.isFinite(startMs)) {
+      throw new AppError('RECOVERY_GAP', 'coveredRange.startAt must be an ISO timestamp');
+    }
+    if (endAt !== null && !Number.isFinite(endMs)) {
+      throw new AppError('RECOVERY_GAP', 'coveredRange.endAt must be an ISO timestamp');
+    }
+    if (startMs !== null && endMs !== null && endMs < startMs) {
+      throw new AppError('RECOVERY_GAP', 'coveredRange.endAt must not precede startAt');
+    }
+    return {
+      startAt,
+      endAt,
+      startEventSeq: Number.isSafeInteger(range.startEventSeq) ? range.startEventSeq : null,
+      endEventSeq: Number.isSafeInteger(range.endEventSeq) ? range.endEventSeq : null,
+      historyEpoch: typeof range.historyEpoch === 'string' ? range.historyEpoch : null
+    };
+  }
+
+  _rangeCovers(outer, inner) {
+    if (!outer || !inner) return false;
+    const outerStart = Date.parse(outer.startAt);
+    const outerEnd = outer.endAt === null ? null : Date.parse(outer.endAt);
+    const innerStart = Date.parse(inner.startAt);
+    const innerEnd = inner.endAt === null ? null : Date.parse(inner.endAt);
+    if (!Number.isFinite(outerStart) || !Number.isFinite(innerStart)) return false;
+    if (outerStart > innerStart) return false;
+    if (innerEnd === null) return false;
+    if (outerEnd === null || outerEnd < innerEnd) return false;
+    if (
+      Number.isSafeInteger(outer.startEventSeq) &&
+      Number.isSafeInteger(inner.startEventSeq) &&
+      outer.startEventSeq > inner.startEventSeq
+    ) {
+      return false;
+    }
+    if (
+      Number.isSafeInteger(outer.endEventSeq) &&
+      Number.isSafeInteger(inner.endEventSeq) &&
+      outer.endEventSeq < inner.endEventSeq
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  async _readEvidenceRecords(recoveryCase) {
+    const records = [];
+    for (const ref of recoveryCase.evidenceRefs || []) {
+      const file = path.join(this.recoveryDir, ref.path);
+      if (!(await pathExists(file))) continue;
+      let record;
+      try {
+        record = JSON.parse(await fsp.readFile(file, 'utf8'));
+      } catch {
+        continue;
+      }
+      if (sha256Hex(JSON.stringify(record)) !== ref.sha256) continue;
+      records.push({ ...record, revision: ref.revision ?? record.revision ?? 0 });
+    }
+    return records;
+  }
+
+  /**
+   * FR-DR-008: a scope may only be authorized once the recovery point covers the
+   * whole uncertainty interval and the owner recorded the repair/verification
+   * preconditions for it.
+   */
+  async _assertAuthorizePreconditions({ recoveryCase, scope, evidenceRecord, candidateRecords = [] }) {
+    const uncertainty = recoveryCase.uncertaintyRange || null;
+    if (!uncertainty || !uncertainty.endAt || uncertainty.open !== false) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'uncertainty range is still open; record isolation evidence first');
+    }
+    const allRecords = [evidenceRecord, ...candidateRecords].filter(Boolean);
+    const coveringRecord = allRecords.find((record) => {
+      const range = this._normalizeCoveredRange(record.coveredRange);
+      return this._rangeCovers(range, uncertainty);
+    });
+    if (!coveringRecord) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'authorization evidence does not cover the uncertainty range');
+    }
+    let preconditions = null;
+    let preconditionsRecord = null;
+    for (const record of [...allRecords].sort((a, b) => (b.revision || 0) - (a.revision || 0))) {
+      const normalized = this._normalizePreconditions(record.preconditions);
+      if (!normalized) continue;
+      if (record.scope) {
+        const recordScope = normalizeScope(record.scope, recoveryCase.workspaceId);
+        if (!scopeCovers(recordScope, scope, recoveryCase.workspaceId) && !scopeCovers(scope, recordScope, recoveryCase.workspaceId)) {
+          continue;
+        }
+      }
+      preconditions = normalized;
+      preconditionsRecord = record;
+      break;
+    }
+    if (!preconditions) {
+      throw new AppError(
+        'RECOVERY_FENCING_REQUIRED',
+        'authorization evidence must include repair/verification preconditions'
+      );
+    }
+    if (preconditions.permanentKeysRepaired !== true) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'permanent business keys were not conservatively repaired');
+    }
+    if (preconditions.budgetRepaired !== true) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'budget/unknown exposure was not conservatively repaired');
+    }
+    if (preconditions.evidenceRevision !== undefined && preconditions.evidenceRevision !== preconditionsRecord.revision) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'authorization preconditions are stale for this evidence revision');
+    }
+    const accountRevalidated = Array.isArray(preconditions.accountsReverified) && preconditions.accountsReverified.length > 0;
+    if (!accountRevalidated) {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'accounts were not re-verified for authorization');
+    }
+    if (scope.kind === 'account_action') {
+      const matches = preconditions.accountsReverified.some(
+        (entry) =>
+          entry &&
+          entry.platform === scope.platform &&
+          String(entry.accountId) === String(scope.accountId) &&
+          (entry.action === undefined ||
+            entry.action === null ||
+            entry.action === '*' ||
+            entry.action === scope.action) &&
+          typeof entry.verifiedAt === 'string'
+      );
+      if (!matches) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'requested account scope was not re-verified');
+      }
+    }
+    if (typeof preconditions.recoveryPointBackupId !== 'string' || preconditions.recoveryPointBackupId === '') {
+      throw new AppError('RECOVERY_FENCING_REQUIRED', 'a new independent verified recovery point is required');
+    }
+    if (typeof this.protection?.verify === 'function') {
+      let result;
+      try {
+        result = await this.protection.verify(preconditions.recoveryPointBackupId);
+      } catch (error) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'the new recovery point could not be verified', {
+          cause: error
+        });
+      }
+      if (!result || result.verified !== true) {
+        throw new AppError('RECOVERY_FENCING_REQUIRED', 'the new recovery point is not verified');
+      }
+    }
+    return {
+      ...preconditions,
+      coverageEvidenceId: coveringRecord.id || null,
+      preconditionsEvidenceId: preconditionsRecord.id || null
+    };
+  }
+
+  _normalizePreconditions(preconditions) {
+    if (!preconditions || typeof preconditions !== 'object') return null;
+    return {
+      permanentKeysRepaired: preconditions.permanentKeysRepaired === true,
+      budgetRepaired: preconditions.budgetRepaired === true,
+      accountsReverified: Array.isArray(preconditions.accountsReverified)
+        ? preconditions.accountsReverified
+            .filter((entry) => entry && typeof entry === 'object')
+            .map((entry) => ({
+              platform: String(entry.platform || ''),
+              accountId: entry.accountId === undefined ? '' : String(entry.accountId),
+              action: entry.action || null,
+              verifiedAt: entry.verifiedAt || null
+            }))
+            .filter((entry) => entry.platform !== '' && entry.accountId !== '')
+        : [],
+      recoveryPointBackupId:
+        typeof preconditions.recoveryPointBackupId === 'string' ? preconditions.recoveryPointBackupId : null,
+      evidenceRevision: Number.isSafeInteger(preconditions.evidenceRevision)
+        ? preconditions.evidenceRevision
+        : undefined,
+      note: preconditions.note ? normalizeText(preconditions.note).slice(0, 2000) : ''
+    };
+  }
+
   async restore({ from, to, requestId }, humanContext) {
     const startedMs = this.now().getTime();
     if (typeof requestId !== 'string' || requestId === '') throw new AppError('CONFIG_INVALID', 'requestId is required');
@@ -1557,9 +2002,17 @@ export class RecoveryService {
       const scope = operationRecoveryScope(operation, sourceState.workspaceId);
       if (scope.kind === 'workspace') continue;
       const exposureId = `exposure_${randomId('x').split('_').at(-1)}`;
+      const matchingHold = holds.find((hold) => {
+        try {
+          return scopeCovers(hold.scope, scope, sourceState.workspaceId);
+        } catch {
+          return false;
+        }
+      });
       unknownExposures[exposureId] = {
         id: exposureId,
         caseId: recoveryId,
+        holdId: matchingHold?.id || null,
         scope,
         currency: operation.currency || null,
         maxMinor: Number.isSafeInteger(operation.amountMinor) ? operation.amountMinor : null,
@@ -1578,6 +2031,10 @@ export class RecoveryService {
         createdAt,
         resolvedAt: null
       };
+      if (matchingHold) {
+        matchingHold.exposureId = matchingHold.exposureId || exposureId;
+        matchingHold.exposureIds = [...new Set([...(matchingHold.exposureIds || []), exposureId])];
+      }
     }
 
     const targetState = deepClone(sourceState);
@@ -1647,16 +2104,21 @@ export class RecoveryService {
       ])
     );
     targetState.outbox = Object.fromEntries(
-      Object.entries(targetState.outbox || {}).map(([id, notification]) => [
-        id,
-        ['pending', 'sending'].includes(notification.status)
-          ? {
-              ...notification,
-              status: 'suppressed',
-              suppressionReason: 'recovery_readonly'
-            }
-          : notification
-      ])
+      Object.entries(targetState.outbox || {}).map(([id, notification]) => {
+        const wasPending =
+          ['pending', 'sending'].includes(notification.status) ||
+          ['pending', 'sending'].includes(notification.capturedStatus);
+        if (!wasPending) return [id, notification];
+        return [
+          id,
+          {
+            ...notification,
+            capturedStatus: notification.capturedStatus || notification.status,
+            status: 'suppressed',
+            suppressionReason: 'recovery_readonly'
+          }
+        ];
+      })
     );
     const ts = createdAt;
     for (const task of Object.values(targetState.tasks || {})) {
@@ -1799,6 +2261,8 @@ export class RecoveryService {
       uncertaintyRange: targetState.recovery.uncertaintyRange,
       decisions: [],
       missingMedia,
+      pendingExcluded: verified.manifest.pendingExcluded || [],
+      parentRecovery: verified.manifest.parentRecovery || null,
       createdAt,
       updatedAt: createdAt
     };
@@ -1824,6 +2288,7 @@ export class RecoveryService {
       finishedAt: nowIso(this.now),
       elapsedMs: this.now().getTime() - startedMs,
       missingMedia,
+      pendingExcluded: verified.manifest.pendingExcluded || [],
       sourceBytes: verified.manifest.files.reduce((sum, entry) => sum + entry.sizeBytes, 0)
     });
     let restoreTestRecord = null;
@@ -1852,6 +2317,7 @@ export class RecoveryService {
       holds,
       unknownExposures,
       missingMedia,
+      pendingExcluded: verified.manifest.pendingExcluded || [],
       restoreTestRecord,
       deduplicated: false,
       elapsedMs: this.now().getTime() - startedMs
@@ -1860,6 +2326,77 @@ export class RecoveryService {
       await clearRestoreTarget(targetDir).catch(() => {});
       throw error;
     }
+  }
+
+  /**
+   * Preserve the surviving evidence of a corrupt/lost source before any restore
+   * (SPEC §27.4 / FR-DR-001/005). Copies provable state, journal segments and
+   * recovery evidence into `<recoveryDir>/corrupt-<timestamp>/` with a hash
+   * manifest; business data is never modified.
+   */
+  async preserveCorruptSource({ dataDir, note = '' }, humanContext) {
+    await this._requireHuman(humanContext, { action: 'recovery.preserve', dataDir });
+    if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) {
+      throw new AppError('CONFIG_INVALID', 'dataDir must be an absolute path');
+    }
+    const sourceDir = path.resolve(dataDir);
+    if (!(await pathExists(sourceDir))) {
+      throw new AppError('RECOVERY_REQUIRED', 'source data directory does not exist');
+    }
+    const stamp = nowIso(this.now).replace(/[:.]/g, '-');
+    const baseRecoveryDir = this.recoveryDir || path.join(sourceDir, 'recovery');
+    const snapshotDir = path.join(baseRecoveryDir, `corrupt-${stamp}`);
+    await ensureDir(snapshotDir);
+    const files = [];
+    const copyOne = async (relative) => {
+      const source = path.join(sourceDir, relative);
+      if (!(await pathExists(source))) return;
+      const lstat = await fsp.lstat(source).catch(() => null);
+      if (!lstat || !lstat.isFile() || lstat.isSymbolicLink()) return;
+      const target = resolveInside(snapshotDir, relative);
+      await ensureDir(path.dirname(target));
+      const copied = await copyFileWithHash(source, target);
+      files.push({ path: relative, sizeBytes: copied.sizeBytes, sha256: copied.sha256, role: 'corrupt_source' });
+    };
+    for (const relative of [
+      'state.json',
+      'instance.json',
+      'migration-package.json',
+      'migration-receipt.json',
+      'config.json',
+      'backup-policy.json',
+      'recovery/recovery.json'
+    ]) {
+      await copyOne(relative);
+    }
+    const journalRoot = path.join(sourceDir, 'journal');
+    if (await pathExists(journalRoot)) {
+      for (const file of await listFiles(journalRoot)) {
+        await copyOne(path.posix.join('journal', file.relativePath));
+      }
+    }
+    const evidenceRoot = path.join(sourceDir, 'recovery', 'evidence');
+    if (await pathExists(evidenceRoot)) {
+      for (const file of await listFiles(evidenceRoot)) {
+        await copyOne(path.posix.join('recovery', 'evidence', file.relativePath));
+      }
+    }
+    const manifest = {
+      schemaVersion: 1,
+      kind: 'corrupt_source_snapshot',
+      sourceDataDir: sourceDir,
+      note: String(note || '').slice(0, 2000),
+      capturedAt: nowIso(this.now),
+      capturedBy: humanContext.principal.id,
+      files
+    };
+    await atomicWriteJson(path.join(snapshotDir, 'manifest.json'), manifest);
+    return {
+      recoveredFrom: sourceDir,
+      snapshotDir,
+      files: files.length,
+      note: manifest.note
+    };
   }
 
   async inspect(recoveryId = null) {
@@ -1910,7 +2447,9 @@ export class RecoveryService {
           }
         : null,
       decisions: recoveryCase.decisions || [],
+      authorizationPreconditions: recoveryCase.authorizationPreconditions || [],
       missingMedia: recoveryCase.missingMedia || [],
+      pendingExcluded: recoveryCase.pendingExcluded || [],
       projectionConsistent,
       dispatchAllowed: false,
       availableCapabilities: instance?.allowedCapabilities || []
@@ -1932,11 +2471,25 @@ export class RecoveryService {
     await this._verifyProjection();
     const kind = evidence.kind || 'fact';
     if (!['fact', 'isolation'].includes(kind)) throw new AppError('RECOVERY_GAP', 'evidence kind is invalid');
+    const coveredRange = this._normalizeCoveredRange(evidence.coveredRange);
     if (kind === 'isolation') {
       if (evidence.conclusion !== 'isolated') throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence is inconclusive');
       if (!evidence.source || !evidence.sourceHash) {
         throw new AppError('RECOVERY_FENCING_REQUIRED', 'isolation evidence needs a trusted source and hash');
       }
+      const range = coveredRange || (evidence.capturedAt
+        ? this._normalizeCoveredRange({
+            startAt: recoveryCase.uncertaintyRange?.startAt || evidence.capturedAt,
+            endAt: evidence.capturedAt
+          })
+        : null);
+      if (!range || !range.endAt) {
+        throw new AppError(
+          'RECOVERY_FENCING_REQUIRED',
+          'isolation evidence must record the covered range up to the isolation time'
+        );
+      }
+      evidence.coveredRange = range;
     }
     const normalizedEvidenceScope = evidence.scope
       ? normalizeScope(evidence.scope, recoveryCase.workspaceId)
@@ -1953,6 +2506,19 @@ export class RecoveryService {
       }
       if (!['confirmed', 'not_sent'].includes(evidence.repair.decision)) {
         throw new AppError('RECOVERY_GAP', 'repair.decision must be confirmed or not_sent');
+      }
+      if (evidence.repair.decision === 'not_sent') {
+        const proofRange = this._normalizeCoveredRange(evidence.coveredRange);
+        const hasProof =
+          (evidence.repair.receipt && typeof evidence.repair.receipt === 'object') ||
+          (proofRange && proofRange.endAt && evidence.source && evidence.source !== 'local_owner' && evidence.sourceHash);
+        const noteText = normalizeText(evidence.repair.note || evidence.note || '').trim();
+        if (!hasProof || noteText === '') {
+          throw new AppError(
+            'RECOVERY_GAP',
+            'not_sent repair requires a verified receipt or covered evidence range plus a reviewed note'
+          );
+        }
       }
       if (!normalizedEvidenceScope) {
         throw new AppError('RECOVERY_GAP', 'operation repair evidence requires an explicit recovery scope');
@@ -2006,6 +2572,9 @@ export class RecoveryService {
         ? { operationId: repair.operationId, decision: repair.decision, receipt: repair.receipt }
         : null,
       note: evidence.note ? normalizeText(evidence.note).slice(0, 2000) : '',
+      preconditions: evidence.preconditions !== undefined
+        ? this._normalizePreconditions(evidence.preconditions)
+        : null,
       reviewedBy: humanContext.principal.id,
       capturedAt: evidence.capturedAt || nowIso(this.now),
       recordedAt: nowIso(this.now),
@@ -2028,6 +2597,19 @@ export class RecoveryService {
         review: record.note,
         revision: nextRevision
       };
+      const closedRange = this._normalizeCoveredRange(record.coveredRange);
+      if (closedRange && closedRange.endAt) {
+        recoveryCase.uncertaintyRange = {
+          ...(recoveryCase.uncertaintyRange || {}),
+          startAt: recoveryCase.uncertaintyRange?.startAt || closedRange.startAt,
+          startEventSeq: recoveryCase.uncertaintyRange?.startEventSeq ?? closedRange.startEventSeq ?? null,
+          endAt: closedRange.endAt,
+          endEventSeq: closedRange.endEventSeq ?? recoveryCase.uncertaintyRange?.endEventSeq ?? null,
+          open: false,
+          closedAt: record.recordedAt,
+          isolationEvidenceId: evidenceId
+        };
+      }
     }
     recoveryCase.revision = nextRevision;
     recoveryCase.phase = 'reconciling';
@@ -2370,6 +2952,28 @@ export class RecoveryService {
         throw new AppError('RECOVERY_GAP', 'authorization evidence does not cover the requested scope');
       }
     }
+    const evidenceRecords = await this._readEvidenceRecords(recoveryCase);
+    const preconditions = await this._assertAuthorizePreconditions({
+      recoveryCase,
+      scope: normalized,
+      evidenceRecord: { ...evidenceRecord, revision: evidenceRecord.revision ?? evidenceRef.revision },
+      candidateRecords: evidenceRecords
+    });
+    recoveryCase.authorizationPreconditions = [
+      ...(recoveryCase.authorizationPreconditions || []),
+      {
+        caseRevision: recoveryCase.revision,
+        scope: normalized,
+        scopeKey: targetKey,
+        evidenceId,
+        evidenceRevision: evidenceRecord.revision,
+        recoveryPointBackupId: preconditions.recoveryPointBackupId,
+        permanentKeysRepaired: preconditions.permanentKeysRepaired,
+        budgetRepaired: preconditions.budgetRepaired,
+        accountsReverified: preconditions.accountsReverified,
+        recordedAt: nowIso(this.now)
+      }
+    ];
     const capabilities = pending?.capabilities || capabilitiesForRecoveryScope(normalized, recoveryCase.workspaceId);
     const nextRevision = pending?.nextRevision || recoveryCase.revision + 1;
     const decision = pending || {
@@ -2380,6 +2984,7 @@ export class RecoveryService {
       evidenceId,
       nextRevision,
       capabilities,
+      recoveryPointBackupId: preconditions.recoveryPointBackupId,
       preparedAt: nowIso(this.now),
       committedAt: null
     };

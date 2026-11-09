@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { AppError } from './errors.js';
 import {
-  canonicalize,
+  atomicWriteFile,
+  atomicWriteJson,
   deepClone,
   deepMerge,
   ensureDir,
@@ -12,9 +13,7 @@ import {
   isValidTimeZone,
   jcsHash,
   nowIso,
-  pathExists,
-  sha256Hex,
-  isSafeRelativePath
+  pathExists
 } from './utils.js';
 
 const configExample = JSON.parse(
@@ -26,6 +25,7 @@ export const CONFIG_SCHEMA_VERSION = 1;
 const BOOLEAN_FIELDS = [
   ['browse', 'enabled'],
   ['browse', 'markWatchHistory'],
+  ['browse', 'allowNoSubtitle'],
   ['comments', 'enabled'],
   ['comments', 'mentionOwner'],
   ['comments', 'allowTemplate'],
@@ -67,7 +67,9 @@ const NESTED_KEYS = {
     'minSubtitleChars',
     'minScore',
     'maxDurationSec',
-    'markWatchHistory'
+    'markWatchHistory',
+    'failureCooldownMinutes',
+    'allowNoSubtitle'
   ]),
   comments: new Set([
     'enabled',
@@ -143,18 +145,6 @@ const NESTED_KEYS = {
   ])
 };
 
-const ABSOLUTE_OR_EMPTY = new Set([
-  'dataDir',
-  'credentialsFile',
-  'production.profilesFile',
-  'production.workDir',
-  'diary.directory',
-  'artifacts.directory',
-  'migration.directory',
-  'publishing.outputDir',
-  'publishing.external.command'
-]);
-
 /** HTTP PATCH allow-list (SPEC §4.5). Privileged/security fields are excluded. */
 export const HTTP_CONFIG_PATHS = Object.freeze([
   'scheduler.enabled',
@@ -169,6 +159,8 @@ export const HTTP_CONFIG_PATHS = Object.freeze([
   'browse.minSubtitleChars',
   'browse.minScore',
   'browse.maxDurationSec',
+  'browse.failureCooldownMinutes',
+  'browse.allowNoSubtitle',
   'comments.enabled',
   'comments.mode',
   'comments.perRound',
@@ -311,6 +303,7 @@ export function validateConfig(input) {
   requireInteger(input.browse.minSubtitleChars, 'browse.minSubtitleChars', 0, 100000, { allowZero: true });
   requireInteger(input.browse.minScore, 'browse.minScore', 0, 1000, { allowZero: true });
   requireInteger(input.browse.maxDurationSec, 'browse.maxDurationSec', 1, 86400);
+  requireInteger(input.browse.failureCooldownMinutes, 'browse.failureCooldownMinutes', 0, 10080, { allowZero: true });
   if (input.browse.markWatchHistory) {
     throw new AppError('CONFIG_INVALID', 'browse.markWatchHistory is not implemented in this release', {
       details: { path: 'browse.markWatchHistory' }
@@ -598,17 +591,36 @@ export async function loadConfigFile(file, options = {}) {
   return validateConfig(withEnv);
 }
 
+/**
+ * Read and fully validate a config JSON file without applying env overrides.
+ * Used by intent reconciliation where the persisted bytes are authoritative.
+ * Returns null when the file is missing, unparsable or fails validation.
+ */
+async function readValidatedConfigText(file) {
+  try {
+    if (!(await pathExists(file))) return null;
+    const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
+    validateConfig(parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 export class ConfigService {
-  constructor({ dataDir, file, store, injected, env = process.env, now = () => new Date(), logger } = {}) {
+  constructor({ dataDir, file, store, injected, env = process.env, now = () => new Date(), logger, hooks = {} } = {}) {
     this.env = env;
     this.injected = injected || {};
     this.store = store;
     this.now = now;
     this.logger = logger;
+    this.hooks = hooks || {};
     this.dataDir = dataDir;
     this.file = file;
     this.config = null;
     this.paths = null;
+    this.revisionVersion = undefined;
+    this.onChangeListeners = new Set();
   }
 
   async load({ bootstrap = false } = {}) {
@@ -650,14 +662,149 @@ export class ConfigService {
 
   getRevision() {
     const config = this.get();
-    return { version: this.revisionVersion || 1, sha256: computeConfigHash(config) };
+    return { version: this.revisionVersion ?? 1, sha256: computeConfigHash(config) };
   }
 
   redacted() {
     return redactConfig(this.get());
   }
 
+  /**
+   * Register a listener invoked after every successful update() commit, in
+   * registration order, with `{config, previous, revision}`. Returns an
+   * unsubscribe function. Listener failures never roll the commit back.
+   */
+  onChange(listener) {
+    if (typeof listener !== 'function') {
+      throw new AppError('CONFIG_INVALID', 'onChange listener must be a function');
+    }
+    this.onChangeListeners.add(listener);
+    return () => this.onChangeListeners.delete(listener);
+  }
+
+  _notifyChange(event) {
+    for (const listener of this.onChangeListeners) {
+      try {
+        const pending = listener(event);
+        if (pending && typeof pending.catch === 'function') {
+          pending.catch((error) => {
+            this.logger?.warn?.('config.onChange listener failed', { code: error?.code || null });
+          });
+        }
+      } catch (error) {
+        this.logger?.warn?.('config.onChange listener failed', { code: error?.code || null });
+      }
+    }
+  }
+
+  _revisionEnforced(source) {
+    return source === 'http' || source === 'command';
+  }
+
+  async _reloadConfigFromFile() {
+    if (!this.file) return;
+    this.config = await loadConfigFile(this.file, { env: this.env, injected: this.injected });
+    // An explicit constructor dataDir keeps priority over the file value.
+    if (this.dataDir && this.dataDir !== resolveDataDir(this.config, this.env)) {
+      this.config.dataDir = this.dataDir;
+    }
+    this.paths = resolvePaths(this.config, this.env);
+  }
+
+  /**
+   * Recover an interrupted update() commit protocol (SPEC §4.5).
+   * Called from syncRevision so startup always resolves a prepared intent to
+   * exactly one durable state: new file + new revision, or old file + old
+   * revision. Never invents a third state.
+   */
+  async reconcileConfigIntent() {
+    if (!this.store || !this.file) return { reconciled: false, action: 'none' };
+    const snapshot = await this.store.getSnapshot();
+    const intent = snapshot.configIntent || null;
+    const nextFile = `${this.file}.next`;
+    const hasNext = await pathExists(nextFile);
+    if (!intent) {
+      if (hasNext) {
+        await fsp.rm(nextFile, { force: true });
+        return { reconciled: false, action: 'removed_orphan_next' };
+      }
+      return { reconciled: false, action: 'none' };
+    }
+    if (
+      !isPlainObject(intent) ||
+      intent.phase !== 'prepared' ||
+      !Number.isSafeInteger(intent.nextVersion) ||
+      intent.nextVersion < 1 ||
+      typeof intent.nextSha256 !== 'string'
+    ) {
+      return this._discardConfigIntent({ intent, nextFile, reason: 'invalid_intent' });
+    }
+    if (path.resolve(String(intent.nextFile || '')) !== path.resolve(nextFile)) {
+      return this._discardConfigIntent({ intent, nextFile, reason: 'intent_file_mismatch' });
+    }
+
+    let candidate = null;
+    let source = null;
+    if (hasNext) {
+      candidate = await readValidatedConfigText(nextFile);
+      source = 'next_file';
+    } else if (await pathExists(this.file)) {
+      candidate = await readValidatedConfigText(this.file);
+      source = 'config_file';
+    }
+    if (!candidate) {
+      return this._discardConfigIntent({ intent, nextFile, reason: 'unreadable_candidate' });
+    }
+    const candidateHash = computeConfigHash(candidate);
+    if (candidateHash !== intent.nextSha256) {
+      return this._discardConfigIntent({ intent, nextFile, reason: 'hash_mismatch' });
+    }
+    if (source === 'next_file') {
+      await fsp.rename(nextFile, this.file);
+    }
+    return this._commitReconciledRevision(intent, candidate, source);
+  }
+
+  async _commitReconciledRevision(intent, config, action) {
+    const hash = computeConfigHash(config);
+    const revision = await this.store.transaction(async (draft, tx) => {
+      const currentVersion = draft.configRevision?.version || 0;
+      const next = {
+        version: Math.max(currentVersion + 1, intent.nextVersion),
+        sha256: hash,
+        updatedAt: nowIso(this.now),
+        timeZone: config.timeZone
+      };
+      draft.configRevision = next;
+      draft.configIntent = null;
+      tx.appendEvent({
+        type: 'config.updated',
+        actor: 'system',
+        payload: { version: next.version, sha256: hash, recovered: action }
+      });
+      return deepClone(next);
+    });
+    this.revisionVersion = revision.version;
+    await this._reloadConfigFromFile();
+    return { reconciled: true, action, revision };
+  }
+
+  async _discardConfigIntent({ intent, nextFile, reason }) {
+    await fsp.rm(nextFile, { force: true }).catch(() => {});
+    await this.store.transaction(async (draft, tx) => {
+      if (!draft.configIntent) return;
+      draft.configIntent = null;
+      tx.appendEvent({
+        type: 'config.update.discarded',
+        actor: 'system',
+        payload: { reason, nextVersion: intent?.nextVersion ?? null, at: nowIso(this.now) }
+      });
+    });
+    return { reconciled: true, action: 'discarded', reason };
+  }
+
   async syncRevision({ bootstrap = false } = {}) {
+    if (this.store) await this.reconcileConfigIntent();
     const config = this.get();
     const hash = computeConfigHash(config);
     const snapshot = await this.store.getSnapshot();
@@ -665,10 +812,6 @@ export class ConfigService {
     if (current.sha256 === hash) {
       this.revisionVersion = current.version;
       return current;
-    }
-    if (!bootstrap && current.sha256 !== '' && !this.allowForeignRevision) {
-      // A changed file is an owner action, but dispatch must fail-closed until
-      // the revision is committed. Startup sync is explicit and audited.
     }
     const next = await this.store.transaction(async (draft, tx) => {
       const revision = {
@@ -681,7 +824,13 @@ export class ConfigService {
       tx.appendEvent({
         type: 'config.revision.updated',
         actor: 'system',
-        payload: { version: revision.version, sha256: hash, timeZone: config.timeZone }
+        payload: {
+          version: revision.version,
+          sha256: hash,
+          previousSha256: current.sha256 || null,
+          bootstrap: bootstrap === true,
+          timeZone: config.timeZone
+        }
       });
       return revision;
     });
@@ -689,14 +838,36 @@ export class ConfigService {
     return next;
   }
 
+  /**
+   * Apply a configuration patch with a recoverable, crash-safe commit protocol
+   * (SPEC §4.5 / FIX_PLAN I2):
+   *   1. validate the merged config and stage `<configFile>.next`;
+   *   2. transaction: CAS expectedRevision, phase/instance gates, write intent;
+   *   3. atomic rename `.next` -> config file;
+   *   4. transaction: commit configRevision, clear intent, append config.updated.
+   * A caught failure rolls back to "old file + old revision" and removes the
+   * intent. A crash leaves the intent for reconcileConfigIntent() at the next
+   * start. HTTP/command sources must pass expectedRevision.
+   */
   async update(patch, { source = 'http', expectedRevision } = {}) {
     if (source === 'http') assertHttpPatch(patch);
-    else if (!['cli', 'local', 'system'].includes(source)) {
+    else if (!['cli', 'local', 'system', 'command'].includes(source)) {
       throw new AppError('FORBIDDEN', 'unknown configuration update source');
     }
-    const current = this.get();
+    const revisionEnforced = this._revisionEnforced(source);
+    if (revisionEnforced && expectedRevision === undefined) {
+      throw new AppError('INPUT_REQUIRED', 'expectedRevision is required for remote configuration updates', {
+        details: { path: 'expectedRevision' }
+      });
+    }
+    if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
+      throw new AppError('INPUT_REQUIRED', 'expectedRevision must be a non-negative integer', {
+        details: { path: 'expectedRevision', value: expectedRevision }
+      });
+    }
+    const previous = this.get();
     if (source === 'http') {
-      if (current.dryRun === true && patch.dryRun === false) {
+      if (previous.dryRun === true && patch.dryRun === false) {
         throw new AppError('FORBIDDEN', 'HTTP configuration update cannot disable dryRun');
       }
       const forbiddenFlags = [
@@ -715,7 +886,7 @@ export class ConfigService {
         }
       }
     }
-    const merged = deepPatch(current, patch);
+    const merged = deepPatch(previous, patch);
     if (merged.production.requireApproval !== true) {
       throw new AppError('CONFIG_INVALID', 'production.requireApproval cannot be disabled');
     }
@@ -725,49 +896,151 @@ export class ConfigService {
     validateConfig(merged);
     const hash = computeConfigHash(merged);
     const paths = resolvePaths(merged, this.env);
-    if (this.store) {
-      const snapshot = await this.store.getSnapshot();
-      if (expectedRevision && snapshot.configRevision?.version !== expectedRevision) {
-        throw new AppError('APPROVAL_STALE', 'configuration revision changed');
-      }
-      if (snapshot.migration?.phase !== 'active') {
-        throw new AppError('MIGRATION_BLOCKED', 'configuration cannot be changed while migration is quiescing/sealed');
-      }
-      if (snapshot.recovery?.phase && !['normal', 'restricted'].includes(snapshot.recovery.phase)) {
-        throw new AppError('RECOVERY_GAP', 'configuration update is blocked during recovery');
-      }
-    }
     await ensureDir(path.dirname(paths.configFile));
-    const { atomicWriteJson } = await import('./utils.js');
-    await atomicWriteJson(paths.configFile, merged, { mode: 0o600 });
-    this.config = merged;
-    this.paths = paths;
-    if (this.store) {
-      const revision = await this.store.transaction(async (draft, tx) => {
-        const next = {
-          version: (draft.configRevision?.version || 0) + 1,
-          sha256: hash,
-          updatedAt: nowIso(this.now),
-          timeZone: merged.timeZone
-        };
-        draft.configRevision = next;
-        tx.appendEvent({
-          type: 'config.updated',
-          actor: source,
-          payload: { version: next.version, sha256: hash, patch: redactConfig(patch) }
+    const nextFile = `${paths.configFile}.next`;
+    let intent = null;
+    let renamed = false;
+    let previousText = null;
+    let committed = false;
+    try {
+      await atomicWriteJson(nextFile, merged, { mode: 0o600 });
+      if (this.store) {
+        this.hooks.afterStageNext?.({ file: paths.configFile, nextFile });
+        intent = await this.store.transaction(async (draft, tx) => {
+          const currentVersion = draft.configRevision?.version || 0;
+          if (expectedRevision !== undefined && currentVersion !== expectedRevision) {
+            throw new AppError('APPROVAL_STALE', 'configuration revision changed', {
+              details: { expectedRevision, actualRevision: currentVersion }
+            });
+          }
+          if (draft.configIntent) {
+            throw new AppError('APPROVAL_STALE', 'another configuration update is in progress');
+          }
+          this._assertConfigWritable(draft, tx);
+          const prepared = {
+            phase: 'prepared',
+            nextVersion: currentVersion + 1,
+            nextSha256: hash,
+            nextFile: path.resolve(nextFile),
+            prevSha256: draft.configRevision?.sha256 || '',
+            at: nowIso(this.now)
+          };
+          draft.configIntent = prepared;
+          tx.appendEvent({
+            type: 'config.update.prepared',
+            actor: source,
+            payload: {
+              version: prepared.nextVersion,
+              sha256: hash,
+              previousSha256: prepared.prevSha256
+            }
+          });
+          return deepClone(prepared);
         });
-        return next;
-      });
-      this.revisionVersion = revision.version;
+        this.hooks.afterIntent?.({ intent });
+        previousText = (await pathExists(paths.configFile)) ? await fsp.readFile(paths.configFile, 'utf8') : null;
+        this.hooks.beforeRename?.({ file: paths.configFile, nextFile, intent });
+        await fsp.rename(nextFile, paths.configFile);
+        renamed = true;
+        this.hooks.afterRename?.({ file: paths.configFile, intent });
+        const revision = await this.store.transaction(async (draft, tx) => {
+          const currentVersion = draft.configRevision?.version || 0;
+          const next = {
+            version: Math.max(currentVersion + 1, intent.nextVersion),
+            sha256: hash,
+            updatedAt: nowIso(this.now),
+            timeZone: merged.timeZone
+          };
+          draft.configRevision = next;
+          draft.configIntent = null;
+          tx.appendEvent({
+            type: 'config.updated',
+            actor: source,
+            payload: { version: next.version, sha256: hash, patch: redactConfig(patch) }
+          });
+          return deepClone(next);
+        });
+        committed = true;
+        this.config = merged;
+        this.paths = paths;
+        this.revisionVersion = revision.version;
+        this._notifyChange({ config: merged, previous, revision });
+      } else {
+        await fsp.rename(nextFile, paths.configFile);
+        committed = true;
+        this.config = merged;
+        this.paths = paths;
+        this._notifyChange({
+          config: merged,
+          previous,
+          revision: { version: this.revisionVersion ?? 1, sha256: hash }
+        });
+      }
+      return this.redacted();
+    } catch (error) {
+      if (!committed) {
+        try {
+          if (renamed) {
+            if (previousText === null) await fsp.rm(paths.configFile, { force: true });
+            else await atomicWriteFile(paths.configFile, previousText, { mode: 0o600 });
+          }
+          await fsp.rm(nextFile, { force: true });
+          if (this.store && intent) {
+            await this.store
+              .transaction(async (draft, tx) => {
+                if (!draft.configIntent) return;
+                draft.configIntent = null;
+                tx.appendEvent({
+                  type: 'config.update.aborted',
+                  actor: source,
+                  payload: { reason: error?.code || 'unknown', nextVersion: intent.nextVersion }
+                });
+              })
+              .catch((cleanupError) => {
+                this.logger?.warn?.('config update rollback failed; intent kept for startup reconcile', {
+                  code: cleanupError?.code || null
+                });
+              });
+          }
+        } catch (cleanupError) {
+          this.logger?.warn?.('config update rollback failed', { code: cleanupError?.code || null });
+        }
+      }
+      throw error;
     }
-    return this.redacted();
+  }
+
+  _assertConfigWritable(draft, tx) {
+    if (draft.migration?.phase !== 'active') {
+      throw new AppError('MIGRATION_BLOCKED', 'configuration cannot be changed while migration is quiescing/sealed');
+    }
+    if (draft.recovery?.phase && !['normal', 'restricted'].includes(draft.recovery.phase)) {
+      throw new AppError('RECOVERY_GAP', 'configuration update is blocked during recovery');
+    }
+    const instanceStatus = tx.instance?.status || 'active';
+    if (instanceStatus === 'recovery-readonly') {
+      throw new AppError('RECOVERY_GAP', 'configuration update is blocked in recovery-readonly instances');
+    }
+    if (!['active', 'paused', 'validated'].includes(instanceStatus)) {
+      throw new AppError('MIGRATION_BLOCKED', `configuration cannot be changed while instance status is ${instanceStatus}`);
+    }
+    return true;
   }
 
   assertCurrentState(state) {
-    const hash = computeConfigHash(this.get());
+    const config = this.get();
+    const hash = computeConfigHash(config);
     if (!state.configRevision || state.configRevision.sha256 !== hash) {
       throw new AppError('CONFIG_INVALID', 'dispatching configuration revision is stale', {
         details: { expected: hash, actual: state.configRevision?.sha256 || null }
+      });
+    }
+    if (this.revisionVersion !== undefined && state.configRevision.version !== this.revisionVersion) {
+      throw new AppError('CONFIG_INVALID', 'dispatching configuration revision version is stale', {
+        details: {
+          expectedVersion: this.revisionVersion,
+          actualVersion: state.configRevision.version ?? null
+        }
       });
     }
   }

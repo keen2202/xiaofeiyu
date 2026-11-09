@@ -32,6 +32,7 @@ async function setup({ maxPaidCostMinor = 0, paidProvider = null, limits = {}, b
       ...structuredClone(LOCAL_SLIDESHOW_PROFILE),
       bound: true,
       blocked: [],
+      providerRefs: { text: {} },
       tools: { ffmpeg: '/usr/bin/ffmpeg', ffprobe: '/usr/bin/ffprobe' }
     }),
     preflight: async () => ({ ok: true }),

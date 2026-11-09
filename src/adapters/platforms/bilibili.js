@@ -4,7 +4,7 @@ import {
   makeReceipt,
   normalizeCapabilities
 } from '../../contracts.js';
-import { nowIso, truncateText } from '../../utils.js';
+import { deepClone, nowIso, truncateText } from '../../utils.js';
 
 export const BILIBILI_CAPABILITY_DECLARATION = Object.freeze({
   'read.content': { supported: true, limits: { sources: ['popular', 'search'] } },
@@ -12,9 +12,22 @@ export const BILIBILI_CAPABILITY_DECLARATION = Object.freeze({
   'write.comment': { supported: true, limits: { maxLength: 2000 } },
   'dm.send': { supported: true, limits: { whitelistOnly: true, defaultRequireMutual: true } },
   'dm.receive': { supported: false, reason: 'inbox_not_in_scope' },
-  'publish.manual': { supported: true, limits: { nativeUpload: false } },
+  'publish.manual': {
+    supported: true,
+    limits: {
+      nativeUpload: false,
+      titleMaxBytes: 80,
+      descriptionMaxBytes: 2000,
+      tagsMax: 12,
+      tagLengthMax: 20,
+      tidRequired: true
+    }
+  },
   'publish.external': { supported: false, reason: 'external_publisher_not_verified' }
 });
+
+/** Platform metadata limits are owned by the adapter, not by the publisher (I8). */
+export const BILIBILI_PUBLISH_LIMITS = BILIBILI_CAPABILITY_DECLARATION['publish.manual'].limits;
 
 function stripHtml(text) {
   return String(text ?? '')
@@ -57,35 +70,6 @@ export class BilibiliPlatformAdapter {
     const account = state.accounts[key];
     if (!account) throw new AppError('IDENTITY_UNVERIFIED', 'active Bilibili account record is missing');
     return account;
-  }
-
-  async _beforeRead() {
-    const account = await this._activeAccount();
-    await this.store.transaction(async (draft) => {
-      this.rateLimiter.reserveRead(draft, {
-        key: `bilibili:${account.accountRef.accountId}`,
-        limits: this._configValue().rateLimit
-      });
-    });
-    return account;
-  }
-
-  async _onRisk({ code, retryAfterMs }) {
-    const account = await this._activeAccount().catch(() => null);
-    if (!account) return;
-    await this.store.transaction(async (draft, tx) => {
-      this.rateLimiter.recordRisk(draft, `bilibili:${account.accountRef.accountId}`, {
-        code,
-        retryAfterMs,
-        reason: 'bilibili_risk_control'
-      });
-      tx.appendEvent({
-        type: 'bilibili.circuit.opened',
-        actor: 'system',
-        accountRef: account.accountRef,
-        payload: { code, retryAfterMs }
-      });
-    });
   }
 
   async verifyAccount() {
@@ -260,11 +244,92 @@ export class BilibiliPlatformAdapter {
     if (String(recipientMid) === account.accountRef.accountId) {
       throw new AppError('FORBIDDEN', 'cannot direct-message yourself');
     }
+    let mutualVerified = false;
     if (requireMutual) {
       const relation = await this.client.relation(recipientMid);
       if (!relation.mutual) throw new AppError('MUTUAL_FOLLOW_REQUIRED', 'recipient is not a mutual follow');
+      mutualVerified = true;
     }
-    return this.client.sendDirectMessage({ recipientMid, text, operationContext, requireMutual });
+    // The protocol client re-checks mutual follow unless this adapter proves it
+    // already verified the relation in this dispatch.
+    return this.client.sendDirectMessage({
+      recipientMid,
+      text,
+      operationContext,
+      requireMutual,
+      mutualVerified
+    });
+  }
+
+  /**
+   * Validate and normalize publish metadata against the platform limits
+   * declared in `capabilities.publish.manual.limits` (I8).
+   */
+  async validatePublishMetadata(metadata) {
+    const limits = this.capabilities['publish.manual'].limits;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata is required', {
+        details: { field: 'metadata' }
+      });
+    }
+    const title = typeof metadata.title === 'string' ? metadata.title.trim() : '';
+    if (title === '') {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.title is required', {
+        details: { field: 'metadata.title' }
+      });
+    }
+    if (Buffer.byteLength(title, 'utf8') > limits.titleMaxBytes) {
+      throw new AppError('PUBLISH_INPUT_INVALID', `metadata.title exceeds ${limits.titleMaxBytes} bytes`, {
+        details: { field: 'metadata.title', titleMaxBytes: limits.titleMaxBytes }
+      });
+    }
+    const description = metadata.description === undefined ? '' : String(metadata.description);
+    if (Buffer.byteLength(description, 'utf8') > limits.descriptionMaxBytes) {
+      throw new AppError('PUBLISH_INPUT_INVALID', `metadata.description exceeds ${limits.descriptionMaxBytes} bytes`, {
+        details: { field: 'metadata.description', descriptionMaxBytes: limits.descriptionMaxBytes }
+      });
+    }
+    const tags = metadata.tags === undefined ? [] : metadata.tags;
+    if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === 'string')) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.tags must be an array of strings', {
+        details: { field: 'metadata.tags' }
+      });
+    }
+    const normalizedTags = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (normalizedTags.length > limits.tagsMax) {
+      throw new AppError('PUBLISH_INPUT_INVALID', `metadata.tags exceeds ${limits.tagsMax} entries`, {
+        details: { field: 'metadata.tags', tagsMax: limits.tagsMax }
+      });
+    }
+    for (const tag of normalizedTags) {
+      if (tag.length > limits.tagLengthMax) {
+        throw new AppError('PUBLISH_INPUT_INVALID', `metadata.tags entries must be at most ${limits.tagLengthMax} characters`, {
+          details: { field: 'metadata.tags', tagLengthMax: limits.tagLengthMax }
+        });
+      }
+    }
+    const platformData = metadata.platformData === undefined ? {} : metadata.platformData;
+    if (!platformData || typeof platformData !== 'object' || Array.isArray(platformData)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.platformData must be an object', {
+        details: { field: 'metadata.platformData' }
+      });
+    }
+    if (platformData.tid !== undefined && (!Number.isSafeInteger(platformData.tid) || platformData.tid <= 0)) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.platformData.tid must be a positive integer', {
+        details: { field: 'metadata.platformData.tid' }
+      });
+    }
+    if (limits.tidRequired && platformData.tid === undefined) {
+      throw new AppError('PUBLISH_INPUT_INVALID', 'metadata.platformData.tid is required', {
+        details: { field: 'metadata.platformData.tid' }
+      });
+    }
+    return {
+      title,
+      description: description.trim(),
+      tags: normalizedTags,
+      platformData: deepClone(platformData)
+    };
   }
 
   async preparePublish() {

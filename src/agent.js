@@ -15,7 +15,21 @@ export class AgentClient {
     this.env = env;
     this.now = now;
     this.logger = logger;
+    this.timeoutMsOverride = timeoutMs;
     this.timeoutMs = timeoutMs ?? config?.agent?.timeoutMs ?? 60000;
+  }
+
+  /**
+   * Hot-reload configuration after a committed config.update (FIX_PLAN I2).
+   * An explicit constructor timeoutMs keeps priority over the new config.
+   */
+  reconfigure(config) {
+    if (!config || typeof config !== 'object') {
+      throw new AppError('CONFIG_INVALID', 'agent reconfigure requires a config object');
+    }
+    this.config = config;
+    this.timeoutMs = this.timeoutMsOverride ?? config.agent?.timeoutMs ?? 60000;
+    return this;
   }
 
   _assertEnabled() {

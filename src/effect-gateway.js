@@ -1,9 +1,12 @@
 import { AppError } from './errors.js';
 import {
+  BVID_PATTERN,
+  assertExecutionDispatchContext,
   assertNoMatchingHold,
   assertOperationContext,
   assertOutboxDispatchContext,
   assertReceipt,
+  createExecutionDispatchContext,
   findMatchingHolds,
   makeReceipt,
   normalizeScope,
@@ -12,6 +15,7 @@ import {
 import { computeConfigHash } from './config.js';
 import {
   deepClone,
+  formatDateInZone,
   formatDateTimeInZone,
   isProcessAlive,
   getProcessStartMs,
@@ -87,6 +91,8 @@ export class EffectGateway {
     humanProof,
     rateLimiter,
     configService,
+    credentials = null,
+    services = {},
     getConfig,
     protection = null,
     now = () => new Date(),
@@ -100,12 +106,15 @@ export class EffectGateway {
     this.humanProof = humanProof;
     this.rateLimiter = rateLimiter;
     this.configService = configService;
+    this.credentials = credentials;
+    this.services = services || {};
     this.getConfig = getConfig || (() => configService.get());
     this.protection = protection;
     this.now = now;
     this.hooks = hooks;
     this.logger = logger;
     this._contextVerifier = this._makeContextVerifier();
+    this._executionContextVerifier = this._makeExecutionContextVerifier();
   }
 
   _makeContextVerifier() {
@@ -148,6 +157,132 @@ export class EffectGateway {
 
   get operationContextVerifier() {
     return this._contextVerifier;
+  }
+
+  _makeExecutionContextVerifier() {
+    const issued = new Map();
+    const signature = ['executionId', 'taskId', 'stageId', 'attempt', 'inputHash', 'instanceId', 'profileId'];
+    const sameContext = (entry, context) =>
+      signature.every((key) => {
+        const expected = entry[key] ?? null;
+        const actual = context[key] ?? null;
+        return expected === actual;
+      });
+    return {
+      issue(record) {
+        const context = createExecutionDispatchContext(record);
+        const token = randomToken(24);
+        issued.set(token, Object.fromEntries(signature.map((key) => [key, context[key] ?? null])));
+        return { ...context, token };
+      },
+      verify(context) {
+        assertExecutionDispatchContext(context);
+        const entry = issued.get(context.token);
+        if (!entry) {
+          throw new AppError('FORBIDDEN', 'ExecutionDispatchContext was not issued by this core');
+        }
+        if (!sameContext(entry, context)) {
+          throw new AppError('FORBIDDEN', 'ExecutionDispatchContext does not match the issued execution');
+        }
+        return true;
+      },
+      consume(context) {
+        this.verify(context);
+        issued.delete(context.token);
+      }
+    };
+  }
+
+  get executionContextVerifier() {
+    return this._executionContextVerifier;
+  }
+
+  /**
+   * Issue the one-shot context a local execution backend must present before
+   * `submit` (SPEC §21.2 / I4). Issuance happens after the execution record is
+   * persisted, so the token is scoped to a concrete execution attempt.
+   */
+  issueExecutionContext(record) {
+    return this._executionContextVerifier.issue(record);
+  }
+
+  /* ---------------------------- credentials ---------------------------- */
+
+  _credentialBinding(state) {
+    const service = this.credentials;
+    if (!service) return null;
+    try {
+      if (typeof service.describeBinding === 'function') return service.describeBinding(state);
+      if (typeof service.getPublicSummary === 'function') return service.getPublicSummary();
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Platform/external writes fail closed when the credential binding changed or
+   * the account was never re-verified (SPEC §5.2, I1). The credential service
+   * owns the detailed checks; the gateway enforces the same gate at reserve and
+   * again at the dispatch boundary.
+   */
+  _assertCredentialsAllowWrite(tx, { namespace, accountRef = null }) {
+    const service = this.credentials;
+    if (!service) return null;
+    const credentialed = namespace === 'platform' || namespace === 'external';
+    if (!credentialed) return null;
+    if (accountRef) {
+      this.rateLimiter?.assertAuthNotPaused?.(
+        tx.state,
+        `${accountRef.platform}:${accountRef.accountId}`
+      );
+    }
+    if (typeof service.assertWriteAllowed === 'function') {
+      service.assertWriteAllowed(tx.state);
+    }
+    return accountRef ? this._credentialBinding(tx.state) : null;
+  }
+
+  _assertCredentialRevisionUnchanged(tx, op) {
+    if (!this.credentials || !op.accountRef) return true;
+    if (!['platform', 'external'].includes(op.namespace)) return true;
+    const current = this._credentialBinding(tx.state);
+    const recorded = op.credentialRevision || null;
+    const actual = current?.credentialRevision || null;
+    if (recorded && actual && recorded !== actual) {
+      throw new AppError('IDENTITY_UNVERIFIED', 'credentials changed after the operation was reserved; run account verify', {
+        details: { operationId: op.id, recordedRevision: recorded, currentRevision: actual }
+      });
+    }
+    return true;
+  }
+
+  /* --------------------------- service hooks --------------------------- */
+
+  /**
+   * Late ledger writes are reported to the migration service inside the same
+   * transaction that settles the Operation (I5). The service is supplied by the
+   * runtime so this core file never imports it.
+   */
+  _noteLateLedgerWrite(draft, tx, payload) {
+    const migration = this.services?.migration;
+    if (typeof migration?.noteLateLedgerWrite !== 'function') return false;
+    return migration.noteLateLedgerWrite(draft, tx, payload);
+  }
+
+  /** Mark the affected diary date for rebuild after a resolved interaction (I6). */
+  _markDiaryDirty(draft, tx, payload) {
+    const diary = this.services?.diary;
+    if (typeof diary?.markDirty !== 'function') return false;
+    return diary.markDirty(draft, tx, payload);
+  }
+
+  _diaryDate() {
+    try {
+      return formatDateInZone(this.now(), this.getConfig().timeZone);
+    } catch {
+      return nowIso(this.now).slice(0, 10);
+    }
   }
 
   _assertConfig(tx) {
@@ -199,6 +334,7 @@ export class EffectGateway {
   }
 
   _assertFence(tx) {
+    tx.assertBusinessAcceptance();
     const fence = tx.state.checkpointFence;
     if (!fence) return;
     const expiresAt = Date.parse(fence.expiresAt || '');
@@ -410,6 +546,7 @@ export class EffectGateway {
       businessKey: data.businessKey,
       taskIds: [...new Set(data.taskIds || [])],
       accountRef: data.accountRef ? deepClone(data.accountRef) : null,
+      credentialRevision: data.credentialRevision || null,
       inputHash: data.inputHash,
       approvalId: data.approvalId || null,
       approvalAction: data.approvalAction || null,
@@ -425,6 +562,45 @@ export class EffectGateway {
       error: null,
       receipt: null
     };
+  }
+
+  /**
+   * Module-level cooldowns (e.g. DM same-video days) must be evaluated in the
+   * same reservation transaction as the business key, not against a snapshot
+   * read before it (I7 / SPEC §12/§13).
+   */
+  _assertCooldowns(tx, cooldown) {
+    const entries = Array.isArray(cooldown) ? cooldown : cooldown ? [cooldown] : [];
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') {
+        throw new AppError('CONFIG_INVALID', 'cooldown must be an object');
+      }
+      const businessKey = entry.businessKey;
+      const days = Number(entry.days);
+      if (typeof businessKey !== 'string' || businessKey === '' || !Number.isFinite(days) || days <= 0) {
+        throw new AppError('CONFIG_INVALID', 'cooldown requires businessKey and positive days');
+      }
+      const record = tx.state.businessKeys[businessKey];
+      if (!record) continue;
+      // Only a real (confirmed) interaction starts a target cooldown; a
+      // proven not-sent or failed attempt must not block a human retry.
+      if (record.status !== 'confirmed') continue;
+      const lastAt = record.confirmedAt || record.updatedAt || null;
+      const lastMs = lastAt ? Date.parse(lastAt) : NaN;
+      if (!Number.isFinite(lastMs)) continue;
+      const nextAllowedMs = lastMs + days * 24 * 60 * 60 * 1000;
+      if (nextAllowedMs > this.now().getTime()) {
+        throw new AppError('DUPLICATE_TARGET', 'business target is still in its cooldown window', {
+          details: {
+            businessKey,
+            days,
+            lastAt,
+            nextAllowedAt: new Date(nextAllowedMs).toISOString()
+          }
+        });
+      }
+    }
+    return true;
   }
 
   async reserveOperation(data) {
@@ -445,6 +621,11 @@ export class EffectGateway {
         platform: data.accountRef?.platform
       });
       this._assertInstance(tx, capability);
+      const credentialBinding = this._assertCredentialsAllowWrite(tx, {
+        namespace: data.namespace,
+        accountRef: data.accountRef || null
+      });
+      this._assertCooldowns(tx, data.cooldown);
       const extraKeys = [...new Set((data.extraBusinessKeys || []).filter(Boolean))].filter(
         (key) => key !== data.businessKey
       );
@@ -487,7 +668,8 @@ export class EffectGateway {
       const op = this._newOperation(tx, {
         ...data,
         taskIds: data.taskIds || (data.taskId ? [data.taskId] : []),
-        protected: protectedOperation
+        protected: protectedOperation,
+        credentialRevision: credentialBinding?.credentialRevision || null
       });
       for (const taskId of op.taskIds) {
         const task = draft.tasks[taskId];
@@ -599,6 +781,11 @@ export class EffectGateway {
         platform: op.accountRef?.platform
       });
       this._assertInstance(tx, capability);
+      this._assertCredentialsAllowWrite(tx, {
+        namespace: op.namespace,
+        accountRef: op.accountRef || null
+      });
+      this._assertCredentialRevisionUnchanged(tx, op);
       if (op.protected) await this._assertProtected(tx, op);
       else assertNoMatchingHold(tx.state, op.recoveryScope || { kind: 'workspace', workspaceId: tx.workspaceId });
       if (op.approvalId && this.approvalService) {
@@ -673,6 +860,12 @@ export class EffectGateway {
       if (outcome === 'confirmed') {
         op.confirmedAt = op.finishedAt;
       }
+      // The ledger write is part of this transaction; a sealed migration source
+      // may need to reopen before the write becomes visible (I5).
+      this._noteLateLedgerWrite(draft, tx, {
+        operationId: op.id,
+        kind: `operation.${outcome}`
+      });
       this._settleBudget(tx, op, outcome);
       for (const key of op.businessKeys || [op.businessKey]) {
         const businessKey = draft.businessKeys[key];
@@ -799,42 +992,203 @@ export class EffectGateway {
     return this.dispatchOperation(reserved.operation.id, execute, options);
   }
 
+  _assertOperationCancellable(op) {
+    if (!op) throw new AppError('FORBIDDEN', 'operation not found');
+    if (['confirmed', 'failed', 'not_sent', 'cancelled'].includes(op.status)) {
+      throw new AppError('FORBIDDEN', 'operation is already terminal');
+    }
+    if (op.status === 'dispatching' || op.status === 'unknown' || op.dispatchAt) {
+      throw new AppError('FORBIDDEN', 'only a never-dispatched reserved operation can be cancelled', {
+        details: { operationId: op.id, status: op.status, dispatchAt: op.dispatchAt || null }
+      });
+    }
+    if (op.status !== 'reserved') {
+      throw new AppError('FORBIDDEN', 'operation state cannot be cancelled', {
+        details: { operationId: op.id, status: op.status }
+      });
+    }
+    return true;
+  }
+
+  _cancelReservedInTransaction(draft, tx, {
+    operationId,
+    reason = '',
+    actor = 'system',
+    evidence = null,
+    provenance = null
+  }) {
+    const op = draft.operations[operationId];
+    this._assertOperationCancellable(op);
+    const now = nowIso(this.now);
+    const note = evidence?.note ? truncateText(evidence.note, 500) : null;
+    op.status = 'cancelled';
+    op.finishedAt = now;
+    op.cancellation = {
+      reason: truncateText(reason || '', 300),
+      actor,
+      evidence: note,
+      provenance: provenance || evidence?.provenance || null,
+      at: now
+    };
+    op.error = { code: 'FORBIDDEN', message: truncateText(reason || 'operation cancelled', 300), retryable: false };
+    this._settleBudget(tx, op, 'cancelled');
+    if (op.quota && typeof this.rateLimiter?.releaseWrite === 'function') {
+      this.rateLimiter.releaseWrite(draft, { key: op.quota.key, action: op.quota.action || null });
+      op.quota.releasedAt = now;
+    }
+    for (const key of op.businessKeys || [op.businessKey]) {
+      const businessKey = draft.businessKeys[key];
+      if (!businessKey) continue;
+      businessKey.status = 'cancelled';
+      businessKey.settledAt = now;
+      businessKey.error = op.error;
+      businessKey.lastOperationId = op.id;
+      businessKey.updatedAt = now;
+    }
+    for (const taskId of op.taskIds) {
+      const task = draft.tasks[taskId];
+      if (task) this.taskManager.settleOperation(tx, op);
+    }
+    tx.appendEvent({
+      type: 'operation.cancelled',
+      actor,
+      taskId: op.taskIds[0] || null,
+      accountRef: op.accountRef,
+      payload: {
+        operationId: op.id,
+        businessKey: op.businessKey,
+        reason: truncateText(reason || '', 300),
+        evidence: note,
+        provenance: op.cancellation.provenance,
+        quotaReleased: Boolean(op.quota)
+      }
+    });
+    return op;
+  }
+
+  _normalizeCancellationEvidence(evidence) {
+    if (evidence === true) {
+      return { note: null, provenance: 'proven_undispatched', provenUndispatched: true };
+    }
+    if (typeof evidence === 'string') {
+      const text = evidence.trim();
+      if (text === '') return null;
+      return { note: truncateText(text, 500), provenance: 'local_human', provenUndispatched: false };
+    }
+    if (evidence && typeof evidence === 'object' && !Array.isArray(evidence)) {
+      const note = evidence.note ?? evidence.reason ?? null;
+      return {
+        note: note === null || note === undefined ? null : truncateText(String(note), 500),
+        provenance: evidence.provenance || evidence.kind || 'local_human',
+        provenUndispatched: evidence.provenUndispatched === true
+      };
+    }
+    return null;
+  }
+
   async cancelReserved(operationId, { provenUndispatched = false, reason = 'cancelled' } = {}) {
+    if (!provenUndispatched) {
+      throw new AppError('OPERATION_UNKNOWN', 'cancellation requires proof that dispatch did not happen');
+    }
     return this.store.transaction(async (draft, tx) => {
-      const op = draft.operations[operationId];
-      if (!op) throw new AppError('FORBIDDEN', 'operation not found');
-      if (op.status !== 'reserved' || op.dispatchAt) {
-        throw new AppError('OPERATION_UNKNOWN', 'only a never-dispatched reserved operation can be cancelled');
-      }
-      if (!provenUndispatched) {
-        throw new AppError('OPERATION_UNKNOWN', 'cancellation requires proof that dispatch did not happen');
-      }
-      op.status = 'cancelled';
-      op.finishedAt = nowIso(this.now);
-      op.error = { code: 'FORBIDDEN', message: truncateText(reason, 300), retryable: false };
-      this._settleBudget(tx, op, 'cancelled');
-      for (const key of op.businessKeys || [op.businessKey]) {
-        const businessKey = draft.businessKeys[key];
-        if (!businessKey) continue;
-        businessKey.status = 'cancelled';
-        businessKey.settledAt = op.finishedAt;
-        businessKey.error = op.error;
-      }
-      for (const taskId of op.taskIds) {
-        const task = draft.tasks[taskId];
-        if (task) this.taskManager.settleOperation(tx, op);
-      }
-      tx.appendEvent({
-        type: 'operation.cancelled',
+      this._assertOperationCancellable(draft.operations[operationId]);
+      const op = this._cancelReservedInTransaction(draft, tx, {
+        operationId,
+        reason,
         actor: 'system',
-        taskId: op.taskIds[0] || null,
-        payload: { operationId: op.id, reason }
+        provenance: 'proven_undispatched'
       });
       return deepClone(op);
     });
   }
 
-  async resolve({ operationId, decision, receipt = null, note = '' }, humanContext, { applyResult = null } = {}) {
+  /**
+   * Trusted local cancellation of a reserved Operation that provably never
+   * crossed the dispatch boundary (I9). Dispatched/unknown operations must be
+   * resolved with evidence instead, never cancelled.
+   */
+  async cancelOperation({ operationId, reason = '', evidence = null } = {}, humanContext) {
+    if (typeof operationId !== 'string' || operationId === '') {
+      throw new AppError('INPUT_REQUIRED', 'operationId is required');
+    }
+    if (!humanContext?.principal || !humanContext?.proof) {
+      throw new AppError('TRUST_UNAVAILABLE', 'operation cancel requires a trusted local human');
+    }
+    const normalizedEvidence = this._normalizeCancellationEvidence(evidence);
+    if (!normalizedEvidence) {
+      throw new AppError('INPUT_REQUIRED', 'cancellation requires evidence that dispatch did not happen');
+    }
+    const snapshot = await this.store.getSnapshot();
+    const known = snapshot.operations[operationId];
+    if (!known) throw new AppError('FORBIDDEN', 'operation not found');
+    if (this.humanProof) {
+      await this.humanProof.assert(humanContext, {
+        action: 'operation.cancel',
+        operationId,
+        businessKey: known.businessKey,
+        inputHash: known.inputHash,
+        reason: truncateText(reason || '', 300),
+        evidence: normalizedEvidence.provenance
+      });
+    }
+    return this.store.transaction(async (draft, tx) => {
+      const current = draft.operations[operationId];
+      if (!current) throw new AppError('FORBIDDEN', 'operation not found');
+      if (current.status === 'cancelled') {
+        return { operation: deepClone(current), deduplicated: true };
+      }
+      const op = this._cancelReservedInTransaction(draft, tx, {
+        operationId,
+        reason,
+        actor: humanContext.principal.id,
+        evidence: normalizedEvidence,
+        provenance: normalizedEvidence.provenance
+      });
+      return { operation: deepClone(op), deduplicated: false };
+    });
+  }
+
+  /**
+   * A repeated resolve with the same decision must be idempotent only when the
+   * externally visible evidence agrees; a different receipt is a conflict
+   * (SPEC §7.3).
+   */
+  _assertResolveIdempotent(current, { decision, receipt = null, note = '', evidenceRef = null }) {
+    const resolution = current.resolution || {};
+    if (decision === 'confirmed' && receipt) {
+      const recorded = current.receipt || resolution.receipt || null;
+      if (recorded) {
+        for (const field of ['externalId', 'url', 'verification']) {
+          if (String(recorded[field] ?? '') !== String(receipt[field] ?? '')) {
+            throw new AppError('IDEMPOTENCY_CONFLICT', 'resolve receipt differs from the recorded result', {
+              details: { operationId: current.id, field, recorded: recorded[field] ?? null, received: receipt[field] ?? null }
+            });
+          }
+        }
+      }
+    }
+    if (decision === 'not_sent') {
+      const normalizedNote = truncateText(note || '', 1000);
+      if (normalizedNote && resolution.note && normalizedNote !== resolution.note) {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'resolve note differs from the recorded result', {
+          details: { operationId: current.id }
+        });
+      }
+      const recordedEvidence = resolution.evidenceRef || null;
+      if (evidenceRef && recordedEvidence && evidenceRef !== recordedEvidence) {
+        throw new AppError('IDEMPOTENCY_CONFLICT', 'resolve evidence differs from the recorded result', {
+          details: { operationId: current.id }
+        });
+      }
+    }
+    return true;
+  }
+
+  async resolve(
+    { operationId, decision, receipt = null, note = '', evidenceRef = null },
+    humanContext,
+    { applyResult = null } = {}
+  ) {
     if (!['confirmed', 'not_sent'].includes(decision)) {
       throw new AppError('CONFIG_INVALID', 'resolve decision must be confirmed or not_sent');
     }
@@ -850,7 +1204,8 @@ export class EffectGateway {
         operationId,
         decision,
         businessKey: op.businessKey,
-        inputHash: op.inputHash
+        inputHash: op.inputHash,
+        evidenceRef: evidenceRef || null
       });
     }
     if (decision === 'confirmed') {
@@ -867,14 +1222,20 @@ export class EffectGateway {
         if (!['publisher_receipt', 'platform_readback'].includes(receipt.verification)) {
           throw new AppError('OPERATION_UNKNOWN', 'external publish requires publisher/platform verification');
         }
+        if (!BVID_PATTERN.test(String(receipt.externalId))) {
+          throw new AppError('OPERATION_UNKNOWN', 'external publish receipt must carry a valid Bilibili BV identifier', {
+            details: { externalId: receipt.externalId }
+          });
+        }
       }
-    } else if (!note && !receipt) {
+    } else if (!note && !receipt && !evidenceRef) {
       throw new AppError('OPERATION_UNKNOWN', 'not_sent requires verified evidence or a note');
     }
     return this.store.transaction(async (draft, tx) => {
       const current = draft.operations[operationId];
       if (!current) throw new AppError('FORBIDDEN', 'operation not found');
       if (current.status === decision) {
+        this._assertResolveIdempotent(current, { decision, receipt, note, evidenceRef });
         return { operation: deepClone(current), deduplicated: true };
       }
       if (current.status !== 'unknown') {
@@ -887,6 +1248,7 @@ export class EffectGateway {
         decision,
         note: truncateText(note || '', 1000),
         receipt: receipt ? deepClone(receipt) : null,
+        evidenceRef: evidenceRef || null,
         resolvedBy: humanContext.principal.id,
         verification: decision === 'confirmed' ? receipt.verification : 'manual_assertion'
       };
@@ -899,6 +1261,17 @@ export class EffectGateway {
           verification: receipt.verification
         };
       }
+      this._noteLateLedgerWrite(draft, tx, {
+        operationId: current.id,
+        kind: 'operation.resolve'
+      });
+      this._markDiaryDirty(draft, tx, {
+        kind: decision === 'confirmed' ? 'operation.resolve.confirmed' : 'operation.resolve.not_sent',
+        accountRef: current.accountRef,
+        taskId: current.taskIds[0] || null,
+        operationId: current.id,
+        date: this._diaryDate()
+      });
       this._resolveBudget(tx, current, decision);
       for (const key of current.businessKeys || [current.businessKey]) {
         const businessKey = draft.businessKeys[key];
@@ -954,7 +1327,8 @@ export class EffectGateway {
           action: current.action,
           businessKey: current.businessKey,
           receipt: current.resultSummary || null,
-          note: truncateText(note || '', 500)
+          note: truncateText(note || '', 500),
+          evidenceRef: evidenceRef || null
         }
       });
       return { operation: deepClone(current), deduplicated: false };
@@ -1009,6 +1383,11 @@ export class EffectGateway {
         }
         if (!['publisher_receipt', 'platform_readback'].includes(receipt.verification)) {
           throw new AppError('RECOVERY_GAP', 'external publish repair requires publisher/platform verification');
+        }
+        if (!BVID_PATTERN.test(String(receipt.externalId))) {
+          throw new AppError('RECOVERY_GAP', 'external publish repair requires a valid Bilibili BV identifier', {
+            details: { externalId: receipt.externalId }
+          });
         }
       }
     } else if (!note && !receipt) {
@@ -1158,6 +1537,10 @@ export class EffectGateway {
           retryable: false
         };
         this._settleBudget(tx, op, next);
+        if (next === 'cancelled' && op.quota && typeof this.rateLimiter?.releaseWrite === 'function') {
+          this.rateLimiter.releaseWrite(draft, { key: op.quota.key, action: op.quota.action || null });
+          op.quota.releasedAt = op.finishedAt;
+        }
         for (const key of op.businessKeys || [op.businessKey]) {
           const businessKey = draft.businessKeys[key];
           if (!businessKey) continue;
@@ -1282,8 +1665,10 @@ export class EffectGateway {
     if (!binding.conversationIds.includes(data.conversationId)) {
       throw new AppError('FORBIDDEN', 'notification conversation is not authorized');
     }
-    this._assertMigration(tx);
-    this._assertFence(tx);
+    if (!data.deferred) {
+      this._assertMigration(tx);
+      this._assertFence(tx);
+    }
     const scope = normalizeScope({
       kind: 'im_conversation',
       workspaceId: tx.workspaceId,
@@ -1291,8 +1676,10 @@ export class EffectGateway {
       botAccountId: binding.botAccountId,
       conversationId: data.conversationId
     });
-    assertNoMatchingHold(tx.state, scope);
-    this._notificationBudget(tx, binding, data);
+    if (!data.deferred) {
+      assertNoMatchingHold(tx.state, scope);
+      this._notificationBudget(tx, binding, data);
+    }
     const notification = {
       id: data.notificationId || randomId('outbox'),
       notificationId: null,
@@ -1316,6 +1703,7 @@ export class EffectGateway {
       suppressionReason: null
     };
     notification.notificationId = notification.id;
+    notification.budgetAtDispatch = data.deferred === true;
     tx.state.outbox[notification.id] = notification;
     tx.appendEvent({
       type: 'outbox.pending',
@@ -1369,9 +1757,11 @@ export class EffectGateway {
       if (!binding.conversationIds.includes(notification.conversationId)) {
         throw new AppError('FORBIDDEN', 'notification conversation is no longer authorized');
       }
+      this._assertConfig(tx);
       this._assertMigration(tx);
       this._assertFence(tx);
       this._assertRecoveryPhase(tx);
+      this._assertInstance(tx, 'im');
       const scope = normalizeScope({
         kind: 'im_conversation',
         workspaceId: tx.workspaceId,
@@ -1387,6 +1777,10 @@ export class EffectGateway {
         recoveryScope: scope,
         action: 'notify'
       });
+      if (!this.getConfig().im.enabled || !this.getConfig().im.notifications.enabled) {
+        throw new AppError('FEATURE_DISABLED', 'IM notifications are disabled');
+      }
+      if (notification.budgetAtDispatch) this._notificationBudget(tx, binding, notification);
       notification.status = 'sending';
       notification.sendingAt = nowIso(this.now);
       notification.attempts += 1;

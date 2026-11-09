@@ -246,6 +246,7 @@ export class ArtifactStore {
       expectedSha256: copied.sha256,
       expectedBytes: copied.sizeBytes,
       expectedMode: sourceType === 'external' ? 'import' : 'derived',
+      fileMode: 0o444,
       requestedRole: role,
       requestedVisibility,
       principalId: principal.id,
@@ -264,20 +265,56 @@ export class ArtifactStore {
       });
     });
     await this.hooks.beforeArtifactRename?.({ artifactId, tempAbs, finalAbs });
+    let finalizedMode = null;
     try {
       await fsp.mkdir(path.dirname(finalAbs), { recursive: true });
       await fsp.rename(tempAbs, finalAbs);
-      await fsp.chmod(finalAbs, 0o444).catch(() => {});
+      await fsp.chmod(finalAbs, pending.fileMode).catch(() => {});
+      const finalizedStat = await fsp.stat(finalAbs);
+      finalizedMode = finalizedStat.mode & 0o777;
+      // Windows only maps the write bit; enforce the immutable mode where the
+      // platform reports POSIX permission bits.
+      if (process.platform !== 'win32' && (finalizedMode & 0o222) !== 0) {
+        throw new AppError('ARTIFACT_INVALID', 'artifact file mode could not be made read-only');
+      }
+      if (finalizedStat.size !== pending.expectedBytes) {
+        throw new AppError('ARTIFACT_INVALID', 'artifact size changed while finalizing');
+      }
       await this.hooks.afterArtifactRename?.({ artifactId, finalAbs });
     } catch (error) {
       await fsp.rm(tempAbs, { force: true }).catch(() => {});
-      throw new AppError('ARTIFACT_INVALID', 'artifact finalize failed', { cause: error });
+      throw error instanceof AppError
+        ? error
+        : new AppError('ARTIFACT_INVALID', 'artifact finalize failed', { cause: error });
+    }
+    let finalSha256 = null;
+    try {
+      finalSha256 = (await fileSha256(finalAbs)).sha256;
+    } catch (error) {
+      throw new AppError('ARTIFACT_INVALID', 'artifact digest could not be read after finalize', { cause: error });
     }
     const record = await this.store.transaction(async (draft, tx) => {
       const current = draft.artifactPendingImports[artifactId];
       if (!current) throw new AppError('ARTIFACT_INVALID', 'pending import disappeared');
-      if (current.expectedSha256 !== copied.sha256) {
-        throw new AppError('ARTIFACT_INVALID', 'pending import hash changed');
+      if (current.expectedSha256 !== copied.sha256 || current.expectedBytes !== copied.sizeBytes) {
+        throw new AppError('ARTIFACT_INVALID', 'pending import hash/size changed');
+      }
+      if (current.principalId !== principal.id) {
+        throw new AppError('ARTIFACT_INVALID', 'pending import principal changed');
+      }
+      if (current.targetFile !== finalRel || !isSafeRelativePath(current.targetFile)) {
+        throw new AppError('ARTIFACT_INVALID', 'pending import target changed');
+      }
+      const recheckedRealPath = await fsp.realpath(sourcePath).catch(() => null);
+      if (recheckedRealPath !== current.sourceRealPath) {
+        throw new AppError('ARTIFACT_INVALID', 'source path changed before artifact commit');
+      }
+      if (sourceType === 'external') this._assertLocalHuman(principal);
+      if (finalSha256 !== current.expectedSha256) {
+        throw new AppError('ARTIFACT_INVALID', 'final artifact digest does not match the pending import');
+      }
+      if (finalizedMode !== null && process.platform !== 'win32' && (finalizedMode & 0o222) !== 0) {
+        throw new AppError('ARTIFACT_INVALID', 'final artifact mode is writable');
       }
       const artifact = {
         artifactId,
@@ -460,7 +497,7 @@ export class ArtifactStore {
         if (finalHash !== pending.expectedSha256) {
           await ensureDir(path.dirname(finalAbs));
           await fsp.rename(tempAbs, finalAbs);
-          await fsp.chmod(finalAbs, 0o444).catch(() => {});
+          await fsp.chmod(finalAbs, pending.fileMode ?? 0o444).catch(() => {});
         }
         await this.store.transaction(async (draft, tx) => {
           const current = draft.artifactPendingImports[pending.artifactId];

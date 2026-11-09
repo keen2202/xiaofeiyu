@@ -3,6 +3,7 @@ import { assertWritablePhase } from '../contracts.js';
 import { deepClone, nowIso, truncateText } from '../utils.js';
 
 const FAILURE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 
 export class BrowseModule {
   constructor({ store, taskManager, adapter, configService, now = () => new Date(), logger, failureCooldownMs = FAILURE_COOLDOWN_MS } = {}) {
@@ -12,7 +13,63 @@ export class BrowseModule {
     this.configService = configService;
     this.now = now;
     this.logger = logger;
+    // Legacy constructor fallback; the runtime value comes from
+    // browse.failureCooldownMinutes when the config exposes it (I2/F05).
     this.failureCooldownMs = failureCooldownMs;
+  }
+
+  /**
+   * Stable per-account dedupe key (FR-BRO-002): the persisted video history is
+   * scoped by platform + accountId + contentId so two accounts never share
+   * processed/failure state for the same BV.
+   */
+  _videoKey(account, contentRef) {
+    const platform = contentRef?.platform || account?.accountRef?.platform || 'bilibili';
+    const accountId = account?.accountRef?.accountId;
+    if (!accountId) throw new AppError('IDENTITY_UNVERIFIED', 'browse requires a verified account');
+    return `${platform}:${accountId}:${contentRef.contentId}`;
+  }
+
+  /** Pre-F05 keys were `bilibili:<BV>`; keep reading them once for migration. */
+  _legacyVideoKey(contentRef) {
+    const platform = contentRef?.platform || 'bilibili';
+    return `${platform}:${contentRef.contentId}`;
+  }
+
+  _lookupVideo(snapshot, account, contentRef) {
+    const key = this._videoKey(account, contentRef);
+    const legacyKey = this._legacyVideoKey(contentRef);
+    const scoped = snapshot.videos?.[key] || null;
+    if (scoped) return { key, legacyKey, video: scoped, legacy: false };
+    const legacy = snapshot.videos?.[legacyKey] || null;
+    return { key, legacyKey, video: legacy, legacy: Boolean(legacy) };
+  }
+
+  _failureCooldownMs(config) {
+    const minutes = config?.browse?.failureCooldownMinutes;
+    if (minutes === undefined || minutes === null) return this.failureCooldownMs;
+    const parsed = Number(minutes);
+    if (!Number.isFinite(parsed) || parsed < 0) return this.failureCooldownMs;
+    return parsed * MINUTE_MS;
+  }
+
+  _recordVideo(draft, account, contentRef, patch, now, extra = {}) {
+    const key = this._videoKey(account, contentRef);
+    const legacyKey = this._legacyVideoKey(contentRef);
+    const base = draft.videos[key] || draft.videos[legacyKey] || {};
+    draft.videos[key] = {
+      ...base,
+      contentRef: deepClone(contentRef),
+      platform: contentRef.platform || account.accountRef.platform,
+      accountId: account.accountRef.accountId,
+      ...extra,
+      ...patch,
+      lastSeenAt: now
+    };
+    // Legacy keys carry no account identity. Once the scoped record exists the
+    // legacy entry is retired so the other account is not blocked by it (D-01).
+    if (draft.videos[legacyKey]) delete draft.videos[legacyKey];
+    return key;
   }
 
   async createTask({ principal, trigger = 'manual', input = {} }) {
@@ -38,7 +95,7 @@ export class BrowseModule {
     });
   }
 
-  async run({ taskId, principal = null }) {
+  async run({ taskId, principal = null, deferCompletion = false }) {
     const config = this.configService.get();
     if (!config.browse.enabled) throw new AppError('FEATURE_DISABLED', 'browse is disabled');
     let snapshot = await this.store.getSnapshot();
@@ -87,14 +144,14 @@ export class BrowseModule {
     }
 
     const seenThisRound = new Set();
+    const failureCooldownMs = this._failureCooldownMs(config);
     if (!discoveryError) {
       for (const candidate of candidates) {
         const contentId = candidate?.contentRef?.contentId;
         if (!contentId || seenThisRound.has(contentId)) continue;
         seenThisRound.add(contentId);
         if (selected.length >= config.browse.perRound * 2) break;
-        const videoKey = `bilibili:${contentId}`;
-        const video = snapshot.videos[videoKey];
+        const { video } = this._lookupVideo(snapshot, account, candidate.contentRef);
         if (candidate.author?.accountId && candidate.author.accountId === account.accountRef.accountId) {
           skipped.push({ contentRef: candidate.contentRef, reason: 'own_content' });
           continue;
@@ -103,7 +160,11 @@ export class BrowseModule {
           skipped.push({ contentRef: candidate.contentRef, reason: 'already_processed' });
           continue;
         }
-        if (video?.lastFailureAt && this.now().getTime() - Date.parse(video.lastFailureAt) < this.failureCooldownMs) {
+        if (
+          failureCooldownMs > 0 &&
+          video?.lastFailureAt &&
+          this.now().getTime() - Date.parse(video.lastFailureAt) < failureCooldownMs
+        ) {
           skipped.push({ contentRef: candidate.contentRef, reason: 'failure_cooldown' });
           continue;
         }
@@ -127,8 +188,14 @@ export class BrowseModule {
         }
         const subtitleText = content.subtitle?.text || '';
         if (subtitleText.trim().length < config.browse.minSubtitleChars) {
-          skipped.push({ contentRef: content.contentRef, reason: 'insufficient_subtitle' });
-          continue;
+          if (config.browse.allowNoSubtitle === true) {
+            // FR-BRO-004 alternative content: keep title/description facts and
+            // mark the candidate so downstream consumers know there is no subtitle.
+            content.subtitleFallback = true;
+          } else {
+            skipped.push({ contentRef: content.contentRef, reason: 'insufficient_subtitle' });
+            continue;
+          }
         }
         const score = this.scoreCandidate(content, config);
         content.score = score;
@@ -160,24 +227,17 @@ export class BrowseModule {
       const current = draft.tasks[taskId];
       const now = nowIso(this.now);
       for (const item of chosen) {
-        const key = `bilibili:${item.contentRef.contentId}`;
-        draft.videos[key] = {
-          ...(draft.videos[key] || {}),
-          contentRef: item.contentRef,
+        this._recordVideo(draft, account, item.contentRef, {
           title: item.title,
           processedAt: now,
-          lastSeenAt: now,
           score: item.score
-        };
+        }, now);
       }
       for (const item of failed) {
-        const key = `bilibili:${item.contentRef.contentId}`;
-        draft.videos[key] = {
-          ...(draft.videos[key] || {}),
-          contentRef: item.contentRef,
+        this._recordVideo(draft, account, item.contentRef, {
           lastFailureAt: now,
           lastError: { code: item.code, message: item.message }
-        };
+        }, now);
       }
       tx.appendEvent({
         type: 'browse.round.completed',
@@ -197,7 +257,9 @@ export class BrowseModule {
         }
       });
       if (discoveryError) {
-        this.taskManager.transition(tx, current, 'failed', {
+        // FR-BRO-004 / §11.3: a round-level discovery failure is a partial
+        // round, never a hard failure that hides already-read facts.
+        this.taskManager.transition(tx, current, 'partial', {
           actor: 'system',
           reason: 'browse discovery failed',
           error: { code: discoveryError.code || 'BILI_API_ERROR', message: truncateText(discoveryError.message, 500) },
@@ -209,6 +271,8 @@ export class BrowseModule {
           reason: 'one or more candidates failed',
           result
         });
+      } else if (deferCompletion) {
+        current.result = result;
       } else {
         this.taskManager.transition(tx, current, 'succeeded', {
           actor: 'system',
@@ -269,6 +333,7 @@ export class BrowseModule {
       topComments: (candidate.topComments || []).slice(0, 10),
       score: candidate.score,
       source: candidate.source,
+      subtitleFallback: candidate.subtitleFallback === true,
       platformData: deepClone(candidate.platformData || {})
     };
   }

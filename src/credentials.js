@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import { AppError } from './errors.js';
 import {
   atomicWriteJson,
+  deepClone,
   nowIso,
   pathExists,
   randomId,
@@ -123,6 +124,125 @@ export class CredentialService {
       throw new AppError('CREDENTIAL_MISSING', 'sessdata and bili_jct are required for writes');
     }
     return credentials;
+  }
+
+  /**
+   * Fail-closed write gate used inside platform dispatch/reservation
+   * transactions (FIX_PLAN I1). Never performs I/O and never mutates state.
+   * Throws CREDENTIAL_MISSING when no account is bound or write credentials are
+   * absent, IDENTITY_UNVERIFIED when the bound account was not verified against
+   * the current credential revision.
+   */
+  assertWriteAllowed(state) {
+    const credentials = this.get();
+    if (!state || !state.activeAccountRef) {
+      throw new AppError('CREDENTIAL_MISSING', 'no active platform account is bound');
+    }
+    const accountId = String(state.activeAccountRef.accountId);
+    const key = `${state.activeAccountRef.platform}:${accountId}`;
+    const account = state.accounts?.[key];
+    if (!account) {
+      throw new AppError('IDENTITY_UNVERIFIED', 'active account record is missing; run account verify');
+    }
+    this.requireWrite();
+    const currentRevision = credentialRevision(credentials);
+    if (
+      !account.credentialRevision ||
+      account.credentialRevision !== currentRevision ||
+      !account.lastVerifiedAt
+    ) {
+      throw new AppError(
+        'IDENTITY_UNVERIFIED',
+        'credential changed since the last account verify; run account verify before platform writes',
+        { details: { accountId, requires: 'account.verify' } }
+      );
+    }
+    return true;
+  }
+
+  /**
+   * Read-only binding description for status/CLI output (FIX_PLAN I1).
+   * `mismatch` is true when the durable account binding no longer matches the
+   * currently loaded credential revision.
+   */
+  describeBinding(state) {
+    const credentials = this.credentials || {};
+    const currentRevision = credentialRevision(credentials);
+    const active = state?.activeAccountRef || null;
+    if (!active) {
+      return {
+        bound: false,
+        accountId: null,
+        credentialRevision: null,
+        verifiedAt: null,
+        mismatch: false
+      };
+    }
+    const accountId = String(active.accountId);
+    const account = state.accounts?.[`${active.platform}:${accountId}`] || null;
+    const recordedRevision = account?.credentialRevision || null;
+    const mismatch =
+      !account ||
+      !recordedRevision ||
+      !currentRevision ||
+      recordedRevision !== currentRevision ||
+      !account.lastVerifiedAt;
+    return {
+      bound: Boolean(account),
+      accountId,
+      credentialRevision: recordedRevision,
+      verifiedAt: account?.lastVerifiedAt || null,
+      mismatch
+    };
+  }
+
+  /**
+   * Startup reconciliation for a cookie change that happened while the process
+   * was stopped: records `credentialMismatchAt` (and an audit event) until an
+   * explicit `account verify` succeeds. Never performs a network whoami.
+   */
+  async reconcileCredentialBinding({ actor = 'system' } = {}) {
+    if (!this.store || !this.credentials) return null;
+    const state = await this.store.getSnapshot();
+    if (!state.activeAccountRef) return null;
+    const binding = this.describeBinding(state);
+    const key = `bilibili:${binding.accountId}`;
+    if (!binding.mismatch) {
+      if (state.accounts[key]?.credentialMismatchAt) {
+        await this.store.transaction(async (draft, tx) => {
+          const account = draft.accounts[key];
+          if (!account?.credentialMismatchAt) return;
+          account.credentialMismatchAt = null;
+          tx.appendEvent({
+            type: 'identity.credential.reconciled',
+            actor,
+            accountRef: deepClone(state.activeAccountRef),
+            payload: { accountId: binding.accountId, credentialRevision: binding.credentialRevision }
+          });
+        });
+      }
+      return { ...binding, recorded: false };
+    }
+    let recorded = false;
+    await this.store.transaction(async (draft, tx) => {
+      const account = draft.accounts[key];
+      if (!account) return;
+      if (!account.credentialMismatchAt) {
+        account.credentialMismatchAt = nowIso(this.now);
+        recorded = true;
+        tx.appendEvent({
+          type: 'identity.credential.mismatch',
+          actor,
+          accountRef: deepClone(draft.activeAccountRef),
+          payload: {
+            accountId: binding.accountId,
+            recordedRevision: binding.credentialRevision,
+            requires: 'account.verify'
+          }
+        });
+      }
+    });
+    return { ...binding, recorded };
   }
 
   cookieForBilibili() {

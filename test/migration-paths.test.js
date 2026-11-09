@@ -6,7 +6,7 @@ import path from 'node:path';
 import { verifyMigrationPackage } from '../src/migration.js';
 import { jcsHash } from '../src/utils.js';
 
-async function syntheticPackage({ extraEntry = null, extraFile = null, symlink = false } = {}) {
+async function syntheticPackage({ extraEntry = null, extraFile = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-mig-path-'));
   const state = { version: 3, workspaceId: 'w', historyEpoch: 'e' };
   const stateText = JSON.stringify(state);
@@ -35,12 +35,6 @@ async function syntheticPackage({ extraEntry = null, extraFile = null, symlink =
   manifest.snapshotHash = jcsHash({ manifestWithoutSnapshotHash: manifest, files });
   await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
   if (extraFile) await fs.writeFile(path.join(dir, extraFile), 'extra');
-  if (symlink) {
-    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-mig-outside-'));
-    const target = path.join(outside, 'target.txt');
-    await fs.writeFile(target, 'target');
-    await fs.symlink(target, path.join(dir, 'link.txt'));
-  }
   return dir;
 }
 
@@ -61,8 +55,18 @@ test('migration verification rejects traversal, absolute paths and symlinks', as
   } finally {
     await fs.rm(absolute, { recursive: true, force: true });
   }
-  const linked = await syntheticPackage({ symlink: true });
+});
+
+test('migration rejects a file symlink when the OS permits fixture creation', async (t) => {
+  const linked = await syntheticPackage();
   try {
+    try { await fs.symlink(path.join(linked, 'state.json'), path.join(linked, 'link.txt')); }
+    catch (error) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(error.code)) {
+        t.skip('Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for file symlinks'); return;
+      }
+      throw error;
+    }
     // Add the symlink to the manifest as if it were a required file.
     const manifest = JSON.parse(await fs.readFile(path.join(linked, 'manifest.json'), 'utf8'));
     const { fileSha256 } = await import('../src/utils.js');
@@ -75,9 +79,10 @@ test('migration verification rejects traversal, absolute paths and symlinks', as
       sha256: hash.sha256,
       required: true
     });
+    delete manifest.snapshotHash;
     manifest.snapshotHash = jcsHash({ manifestWithoutSnapshotHash: manifest, files: manifest.files });
     await fs.writeFile(path.join(linked, 'manifest.json'), JSON.stringify(manifest));
-    await assert.rejects(() => verifyMigrationPackage(linked), (error) => error.code === 'MIGRATION_BLOCKED');
+    await assert.rejects(() => verifyMigrationPackage(linked), (error) => error.code === 'MIGRATION_BLOCKED' && /not a regular file/.test(error.message));
   } finally {
     await fs.rm(linked, { recursive: true, force: true });
   }

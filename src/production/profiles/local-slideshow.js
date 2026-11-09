@@ -14,8 +14,10 @@ export const LOCAL_SLIDESHOW_PROFILE = Object.freeze({
   backend: 'local',
   stages: ['script', 'assets', 'voice', 'render', 'validate'],
   requiredInputs: { script: 1, visual: 1 },
+  requiredOutputs: ['video', 'cover'],
   restartSafe: { script: true, assets: true, voice: true, render: false, validate: true },
   voiceMode: 'optional',
+  providerRefs: null,
   outputLimits: {
     minWidth: 2,
     maxWidth: 3840,
@@ -30,6 +32,65 @@ export const LOCAL_SLIDESHOW_PROFILE = Object.freeze({
   toolVersionRange: { min: '4.0.0', max: '99.0.0' },
   tools: { ffmpeg: null, ffprobe: null }
 });
+
+function assertProfileDeclarations(entry) {
+  if (entry.stages !== undefined) {
+    if (
+      !Array.isArray(entry.stages) ||
+      entry.stages.length === 0 ||
+      entry.stages.some((stage) => typeof stage !== 'string' || !LOCAL_SLIDESHOW_PROFILE.stages.includes(stage))
+    ) {
+      throw new AppError('CONFIG_INVALID', 'profile stages must be a non-empty subset of the fixed stages');
+    }
+  }
+  if (entry.restartSafe !== undefined) {
+    if (typeof entry.restartSafe !== 'object' || entry.restartSafe === null) {
+      throw new AppError('CONFIG_INVALID', 'profile restartSafe must be an object');
+    }
+    for (const [stage, value] of Object.entries(entry.restartSafe)) {
+      if (!LOCAL_SLIDESHOW_PROFILE.stages.includes(stage) || typeof value !== 'boolean') {
+        throw new AppError('CONFIG_INVALID', 'profile restartSafe entries must map fixed stages to booleans');
+      }
+    }
+  }
+  if (entry.requiredInputs !== undefined) {
+    const required = entry.requiredInputs;
+    if (
+      typeof required !== 'object' ||
+      required === null ||
+      !Number.isSafeInteger(required.script) ||
+      required.script < 1 ||
+      !Number.isSafeInteger(required.visual) ||
+      required.visual < 1 ||
+      Object.keys(required).some((key) => !['script', 'visual'].includes(key))
+    ) {
+      throw new AppError('CONFIG_INVALID', 'profile requiredInputs must declare positive script/visual counts');
+    }
+  }
+  if (entry.requiredOutputs !== undefined) {
+    if (
+      !Array.isArray(entry.requiredOutputs) ||
+      !entry.requiredOutputs.includes('video') ||
+      entry.requiredOutputs.some((role) => !['video', 'cover'].includes(role))
+    ) {
+      throw new AppError('CONFIG_INVALID', 'profile requiredOutputs must contain video/cover');
+    }
+  }
+  if (entry.providerRefs !== undefined && entry.providerRefs !== null) {
+    const refs = entry.providerRefs;
+    if (
+      typeof refs !== 'object' ||
+      refs === null ||
+      Object.keys(refs).some((key) => key !== 'text') ||
+      (refs.text !== undefined &&
+        (typeof refs.text !== 'object' ||
+          refs.text === null ||
+          (refs.text.providerId !== undefined && typeof refs.text.providerId !== 'string')))
+    ) {
+      throw new AppError('CONFIG_INVALID', 'profile providerRefs may only declare an optional text provider');
+    }
+  }
+}
 
 export function validateOutputSpec(output, { profile = LOCAL_SLIDESHOW_PROFILE, config = null } = {}) {
   if (!output || typeof output !== 'object') throw new AppError('INPUT_REQUIRED', 'output spec is required');
@@ -140,6 +201,7 @@ export async function loadLocalSlideshowProfile({ profilesFile, profileId = 'loc
   if (entry.voiceMode && !['optional', 'required'].includes(entry.voiceMode)) {
     throw new AppError('CONFIG_INVALID', 'profile voiceMode must be optional or required');
   }
+  assertProfileDeclarations(entry);
   const merged = deepMerge(LOCAL_SLIDESHOW_PROFILE, {
     ...entry,
     tools: {

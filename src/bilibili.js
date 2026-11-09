@@ -1,10 +1,26 @@
 import { AppError } from './errors.js';
 import { makeReceipt } from './contracts.js';
-import { md5Hex } from './utils.js';
+import { md5Hex, nowIso } from './utils.js';
 
 export const BILI_ALLOWED_COOKIE_HOSTS = Object.freeze(['api.bilibili.com', 'api.vc.bilibili.com']);
 export const BILI_RISK_CODES = Object.freeze([-412, -352, -799, -509, -10403]);
 export const BILI_AUTH_CODES = Object.freeze([-101, -111]);
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Retry-After may be delta-seconds or an HTTP-date (SPEC §7.4). */
+export function parseRetryAfterMs(value, nowMs = Date.now()) {
+  if (value === null || value === undefined || value === '') return 0;
+  const text = String(value).trim();
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric >= 0) return Math.round(numeric * 1000);
+  const parsed = Date.parse(text);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, parsed - nowMs);
+}
+
+function isRedirectStatus(status) {
+  return REDIRECT_STATUSES.has(Number(status));
+}
 
 /** Standard WBI mixin permutation table. */
 export const WBI_MIXIN_KEY_ENC_TAB = Object.freeze([
@@ -84,29 +100,63 @@ export class BilibiliClient {
   constructor({
     config,
     credentials,
+    store = null,
+    rateLimiter = null,
     fetchImpl = globalThis.fetch,
     now = () => new Date(),
     logger,
     onRisk = null,
+    onAuthFailure = null,
     beforeRead = null,
     operationContextVerifier = null,
+    mutualVerifier = null,
     deviceId = null,
     deviceIdProvider = null,
     timeoutMs = null
   } = {}) {
     this.config = config;
     this.credentials = credentials || {};
+    this.store = store;
+    this.rateLimiter = rateLimiter;
     this.fetchImpl = fetchImpl;
     this.now = now;
     this.logger = logger;
     this.onRisk = onRisk;
+    this.onAuthFailure = onAuthFailure;
     this.beforeRead = beforeRead;
     this.operationContextVerifier = operationContextVerifier;
+    this.mutualVerifier = mutualVerifier;
     this.deviceId = deviceId;
     this.deviceIdProvider = deviceIdProvider;
+    this._explicitTimeoutMs = timeoutMs;
     this.timeoutMs = timeoutMs ?? config?.rateLimit?.requestTimeoutMs ?? 30000;
     this.wbiCache = null;
     this._deviceIdFallback = null;
+  }
+
+  /**
+   * Apply a committed configuration revision at runtime (SPEC §4.5). The
+   * credentials object is owned by the caller and can be updated separately
+   * after a successful account verification.
+   */
+  reconfigure(config) {
+    if (!config || typeof config !== 'object') {
+      throw new AppError('CONFIG_INVALID', 'BilibiliClient.reconfigure requires a configuration object');
+    }
+    this.config = config;
+    if (this._explicitTimeoutMs === null || this._explicitTimeoutMs === undefined) {
+      this.timeoutMs = config?.rateLimit?.requestTimeoutMs ?? this.timeoutMs;
+    }
+    return this;
+  }
+
+  setCredentials(credentials) {
+    this.credentials = credentials || {};
+    return this;
+  }
+
+  _activeRateKey(state) {
+    return state?.activeAccountRef ? `bilibili:${state.activeAccountRef.accountId}` : 'bilibili:unverified';
   }
 
   _cookieHeader(url) {
@@ -119,8 +169,27 @@ export class BilibiliClient {
     return parts.join('; ');
   }
 
-  async _beforeRead() {
-    if (typeof this.beforeRead === 'function') await this.beforeRead();
+  async _beforeRead(info = {}) {
+    if (typeof this.beforeRead === 'function') return this.beforeRead(info);
+    return this._defaultReserveRead(info);
+  }
+
+  /**
+   * Default wiring used when the runtime injects the SPEC §8.1 `store` and
+   * `rateLimiter` instead of callbacks. Retries reserve the quota again but do
+   * not wait for the read time slot they already consumed.
+   */
+  async _defaultReserveRead(info = {}) {
+    if (!this.store || !this.rateLimiter) return null;
+    const state = await this.store.getSnapshot();
+    const key = this._activeRateKey(state);
+    return this.store.transaction(async (draft) =>
+      this.rateLimiter.reserveRead(draft, {
+        key,
+        limits: this.config?.rateLimit || {},
+        enforceGap: info.retry !== true
+      })
+    );
   }
 
   async _notifyRisk(code, retryAfterMs = 0) {
@@ -130,7 +199,119 @@ export class BilibiliClient {
       } catch (error) {
         if (this.logger) this.logger.warn?.('bilibili risk callback failed', { message: error.message });
       }
+      return;
     }
+    if (!this.store) return;
+    try {
+      const state = await this.store.getSnapshot();
+      if (!state.activeAccountRef) return;
+      const key = this._activeRateKey(state);
+      await this.store.transaction(async (draft, tx) => {
+        this.rateLimiter?.recordRisk?.(draft, key, {
+          code,
+          retryAfterMs,
+          reason: 'bilibili_risk_control'
+        });
+        tx.appendEvent({
+          type: 'bilibili.circuit.opened',
+          actor: 'system',
+          accountRef: state.activeAccountRef,
+          payload: { code, retryAfterMs }
+        });
+      });
+    } catch (error) {
+      if (this.logger) this.logger.warn?.('bilibili risk persistence failed', { message: error.message });
+    }
+  }
+
+  /** SPEC §7.4: an invalid login becomes a persistent manual pause. */
+  async _notifyAuthFailure(code) {
+    if (typeof this.onAuthFailure === 'function') {
+      try {
+        await this.onAuthFailure({ code });
+      } catch (error) {
+        if (this.logger) this.logger.warn?.('bilibili auth callback failed', { message: error.message });
+      }
+      return;
+    }
+    if (!this.store) return;
+    try {
+      const state = await this.store.getSnapshot();
+      if (!state.activeAccountRef) return;
+      const key = this._activeRateKey(state);
+      await this.store.transaction(async (draft, tx) => {
+        if (typeof this.rateLimiter?.markAuthPaused === 'function') {
+          this.rateLimiter.markAuthPaused(draft, key, {
+            code,
+            reason: 'bilibili_login_invalid',
+            at: nowIso(this.now)
+          });
+        } else if (draft.accounts?.[key]) {
+          draft.accounts[key].authPausedAt = nowIso(this.now);
+          draft.accounts[key].authPausedReason = 'bilibili_login_invalid';
+          draft.accounts[key].authPausedCode = String(code);
+        }
+        tx.appendEvent({
+          type: 'bilibili.auth.paused',
+          actor: 'system',
+          accountRef: state.activeAccountRef,
+          payload: { code: Number(code), accountKey: key }
+        });
+      });
+    } catch (error) {
+      if (this.logger) this.logger.warn?.('bilibili auth pause persistence failed', { message: error.message });
+    }
+  }
+
+  /**
+   * Cookie-bearing requests must never leak the session cookie across a
+   * redirect (SPEC §5.2). They use `redirect: 'manual'` and may only follow a
+   * redirect when every hop stays on the cookie whitelist and the request is a
+   * replay-safe GET or HEAD.
+   */
+  async _fetchWithCookiePolicy(url, init, cookie) {
+    if (!cookie) {
+      return this.fetchImpl(url, { ...init, redirect: 'follow' });
+    }
+    const method = String(init.method || 'GET').toUpperCase();
+    let currentUrl = String(url);
+    let response = await this.fetchImpl(currentUrl, { ...init, redirect: 'manual' });
+    if (!isRedirectStatus(response.status)) return response;
+    if (method !== 'GET' && method !== 'HEAD') {
+      throw new AppError('FORBIDDEN', 'a cookie-bearing write must not be redirected', {
+        retryable: false,
+        details: { httpStatus: response.status, method }
+      });
+    }
+    for (let hop = 0; hop < 3; hop += 1) {
+      const location = response.headers?.get?.('location');
+      if (!location) {
+        throw new AppError('BILI_API_ERROR', 'redirect response has no location header', {
+          retryable: false,
+          details: { httpStatus: response.status }
+        });
+      }
+      let target;
+      try {
+        target = new URL(location, currentUrl);
+      } catch {
+        throw new AppError('FORBIDDEN', 'cookie-bearing request redirect target is invalid', {
+          retryable: false
+        });
+      }
+      if (target.protocol !== 'https:' || !BILI_ALLOWED_COOKIE_HOSTS.includes(target.hostname)) {
+        throw new AppError('FORBIDDEN', 'cookie redirect to a non-whitelisted host is rejected', {
+          retryable: false,
+          details: { from: hostOf(currentUrl), to: target.hostname, protocol: target.protocol }
+        });
+      }
+      currentUrl = target.toString();
+      response = await this.fetchImpl(currentUrl, { ...init, redirect: 'manual' });
+      if (!isRedirectStatus(response.status)) return response;
+    }
+    throw new AppError('BILI_API_ERROR', 'too many redirects for a cookie-bearing request', {
+      retryable: false
+    });
   }
 
   async _rawRequest(url, { method = 'GET', headers = {}, body = undefined, read = false } = {}) {
@@ -146,32 +327,43 @@ export class BilibiliClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('request timeout')), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(url, {
-        method,
-        headers: requestHeaders,
-        body,
-        signal: controller.signal,
-        redirect: 'follow'
-      });
+      const response = await this._fetchWithCookiePolicy(
+        url,
+        { method, headers: requestHeaders, body, signal: controller.signal },
+        cookie
+      );
       const text = await response.text();
       if (text.length > 20 * 1024 * 1024) {
         throw new AppError('BILI_API_ERROR', 'Bilibili response is too large');
       }
-      let json;
+      const retryAfterMs = parseRetryAfterMs(response.headers?.get?.('retry-after'), this.now().getTime());
+      // Risk-control pages are frequently HTML, so the HTTP status must be
+      // classified before any JSON parsing (SPEC §7.4).
+      if (response.status === 412 || response.status === 429) {
+        await this._notifyRisk(response.status, retryAfterMs);
+        throw new AppError('BILI_API_ERROR', 'Bilibili risk control triggered', {
+          retryable: false,
+          details: { httpStatus: response.status, retryAfterMs }
+        });
+      }
+      let json = null;
       try {
         json = JSON.parse(text);
       } catch {
+        json = null;
+      }
+      if (!json || typeof json !== 'object') {
         throw new AppError('BILI_API_ERROR', 'Bilibili response is not JSON', {
+          retryable: !response.ok && response.status >= 500,
           details: { httpStatus: response.status }
         });
       }
-      const riskCode = Number(json?.code);
-      if (response.status === 412 || response.status === 429 || BILI_RISK_CODES.includes(riskCode)) {
-        const retryAfter = Number(response.headers?.get?.('retry-after')) || 0;
-        await this._notifyRisk(riskCode || response.status, retryAfter * 1000);
+      const riskCode = Number(json.code);
+      if (BILI_RISK_CODES.includes(riskCode)) {
+        await this._notifyRisk(riskCode, retryAfterMs);
         throw new AppError('BILI_API_ERROR', 'Bilibili risk control triggered', {
           retryable: false,
-          details: { httpStatus: response.status, biliCode: riskCode || null }
+          details: { httpStatus: response.status, biliCode: riskCode, retryAfterMs }
         });
       }
       if (!response.ok) {
@@ -180,17 +372,17 @@ export class BilibiliClient {
           details: { httpStatus: response.status }
         });
       }
-      if (!json || typeof json !== 'object') {
-        throw new AppError('BILI_API_ERROR', 'Bilibili response shape is invalid');
-      }
       if (json.code !== undefined && Number(json.code) !== 0) {
-        if (BILI_AUTH_CODES.includes(Number(json.code))) {
+        const biliCode = Number(json.code);
+        if (BILI_AUTH_CODES.includes(biliCode)) {
+          await this._notifyAuthFailure(biliCode);
           throw new AppError('CREDENTIAL_MISSING', 'Bilibili login is required', {
-            details: { biliCode: Number(json.code) }
+            retryable: false,
+            details: { biliCode }
           });
         }
         throw new AppError('BILI_API_ERROR', json.message || `Bilibili error ${json.code}`, {
-          details: { biliCode: Number(json.code) }
+          details: { biliCode }
         });
       }
       return json;
@@ -211,11 +403,16 @@ export class BilibiliClient {
     let lastError;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
-        if (options.read && attempt === 0) await this._beforeRead();
+        // Every read attempt reserves quota again; retries do not wait for the
+        // read time slot they already consumed (SPEC §7.1).
+        if (options.read) await this._beforeRead({ attempt, retry: attempt > 0 });
         return await this._rawRequest(url, options);
       } catch (error) {
         lastError = error;
         if (attempt + 1 >= maxAttempts || !options.read || error.retryable !== true) break;
+        // Quota/time-slot waits are scheduling decisions, not transient errors;
+        // retrying immediately would bypass the slot that just blocked.
+        if (error.code === 'RATE_LIMITED' || error.code === 'QUOTA_EXCEEDED') break;
       }
     }
     throw lastError;
@@ -245,7 +442,8 @@ export class BilibiliClient {
     const json = await this._request('https://api.bilibili.com/x/web-interface/nav', { read: true });
     const data = json.data || {};
     if (data.isLogin !== true) {
-      throw new AppError('CREDENTIAL_MISSING', 'Bilibili session is not logged in');
+      await this._notifyAuthFailure(-101);
+      throw new AppError('CREDENTIAL_MISSING', 'Bilibili session is not logged in', { retryable: false });
     }
     return { mid: Number(data.mid), uname: data.uname || '', isLogin: true };
   }
@@ -426,7 +624,33 @@ export class BilibiliClient {
     });
   }
 
-  async sendDirectMessage({ recipientMid, text, operationContext, requireMutual = true }) {
+  /**
+   * Mutual-follow is enforced at the protocol layer, not only in the adapter
+   * (SPEC §8.5). Callers that already verified the relation pass
+   * `mutualVerified: true`; everybody else is checked here through an injected
+   * verifier or the relation read API.
+   */
+  async assertMutualFollow(recipientMid, { mutualVerified = false } = {}) {
+    if (mutualVerified === true) return true;
+    let relation;
+    if (typeof this.mutualVerifier === 'function') {
+      relation = await this.mutualVerifier({ recipientMid: String(recipientMid) });
+    } else {
+      relation = await this.relation(recipientMid);
+    }
+    if (!relation?.mutual) {
+      throw new AppError('MUTUAL_FOLLOW_REQUIRED', 'recipient is not a mutual follow', { retryable: false });
+    }
+    return true;
+  }
+
+  async sendDirectMessage({
+    recipientMid,
+    text,
+    operationContext,
+    requireMutual = true,
+    mutualVerified = false
+  }) {
     this._verifyOperationContext(operationContext);
     const message = String(text ?? '').trim();
     const maxLength = this.config?.directMessages?.maxLength ?? 300;
@@ -434,6 +658,7 @@ export class BilibiliClient {
     if (message.length > maxLength) throw new AppError('INPUT_REQUIRED', `DM text exceeds ${maxLength} characters`);
     const self = String(operationContext.accountRef.accountId);
     if (String(recipientMid) === self) throw new AppError('FORBIDDEN', 'cannot direct-message yourself');
+    if (requireMutual) await this.assertMutualFollow(recipientMid, { mutualVerified });
     const deviceId = this.deviceIdProvider ? await this.deviceIdProvider() : this.deviceId;
     if (!deviceId) throw new AppError('DEPENDENCY_UNAVAILABLE', 'stable DM device id is unavailable');
     const body = new URLSearchParams();
