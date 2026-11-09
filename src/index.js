@@ -423,12 +423,22 @@ export async function createRuntime(options = {}) {
   });
   // Optional IM bridge: loaded dynamically (and only when an IM host/enablement
   // exists) so the default core does not import the channel adapter module.
+  // A host may be injected (host-provided dsh-im), otherwise the optional local
+  // OneBot v11 QQ bridge is built from config and remains disabled unless the
+  // operator configured an endpoint, enabled IM and created local bindings.
   let imAdapter = null;
   let imBridge = null;
+  let imHostResolved = imHost;
+  let imHostSource = imHost ? 'injected' : null;
   if (config.im.enabled || imHost) {
     try {
+      if (!imHostResolved && config.im.transport === 'onebot-v11' && config.im.onebot?.baseUrl) {
+        const { createOneBotQqHost } = await import('./adapters/channels/onebot-qq.js');
+        imHostResolved = createOneBotQqHost({ config, env, logger, fetchImpl, now });
+        if (imHostResolved) imHostSource = 'onebot-v11';
+      }
       const { DshImChannelAdapter, ImBridge } = await import('./adapters/channels/dsh-im.js');
-      imAdapter = new DshImChannelAdapter({ host: imHost, config, now, logger });
+      imAdapter = new DshImChannelAdapter({ host: imHostResolved, config, now, logger });
       imBridge = new ImBridge({
         store,
         identity,
@@ -654,7 +664,7 @@ export async function createRuntime(options = {}) {
         runtime.componentStatus.backup = { started: false, error: { code: error.code, message: sanitizeErrorMessage(error.message) } };
       }
       const imConfig = configService.get().im;
-      if (imConfig.enabled && imHost && imBridge) {
+      if (imConfig.enabled && imHostResolved && imBridge) {
         try {
           im = await imBridge.start();
           runtime.componentStatus.im = { started: true, error: null };
@@ -666,8 +676,10 @@ export async function createRuntime(options = {}) {
         runtime.componentStatus.im = {
           started: false,
           enabled: imConfig.enabled,
-          configured: Boolean(imHost),
-          reason: !imConfig.enabled ? 'disabled' : !imHost ? 'host_not_provided' : 'module_unavailable',
+          configured: Boolean(imHostResolved),
+          transport: imConfig.transport || 'dsh-im',
+          hostSource: imHostSource,
+          reason: !imConfig.enabled ? 'disabled' : !imHostResolved ? 'host_not_provided' : 'module_unavailable',
           error: null
         };
       }
@@ -815,8 +827,10 @@ export async function createRuntime(options = {}) {
         },
         im: {
           enabled: currentConfig.im.enabled === true,
-          configured: Boolean(imHost),
+          configured: Boolean(imHostResolved),
           moduleAvailable: Boolean(imBridge),
+          transport: currentConfig.im.transport || 'dsh-im',
+          hostSource: imHostSource,
           started: Boolean(imBridge?.started),
           capabilities: imAdapter?.capabilities || null,
           ...(runtime.componentStatus.im || {})

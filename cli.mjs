@@ -275,7 +275,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         'node cli.mjs operation resolve <id> confirmed|not_sent --receipt <json> [--evidence-ref <ref>] --note <note> --confirm',
         'node cli.mjs operation cancel <id> --reason <text> --confirm',
         'node cli.mjs outbox resolve <id> confirmed|not_sent --receipt <json> --note <note> --confirm',
-        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm',
+        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe [--json]',
         'node cli.mjs migration <prepare|export|release|import|validate|activate|status|abort|disable-target|rollback|release-hold> ...',
         '  prepare --target <instance> [--executor-stop-evidence <text>] --confirm; activate <id> --receipt <file> --source-stopped --confirm',
         '  release-hold <hold-id> --task <task-id> --note <note> --confirm',
@@ -296,6 +296,49 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       { env: process.env }
     );
     print(stdout, { valid: true, config: redactConfig(config) });
+    return 0;
+  }
+
+  // Read-only probe of the optional local OneBot v11 QQ bridge. It performs
+  // get_status/get_login_info only (never sends a message) so an operator can
+  // verify endpoint/token/bot account before enabling IM or binding a sender.
+  if (command[0] === 'im' && command[1] === 'probe') {
+    const config = await loadConfigFile(
+      flags.config ? path.resolve(flags.config) : flags['data-dir'] ? path.join(path.resolve(flags['data-dir']), 'config.json') : null,
+      { env: process.env }
+    );
+    const { createOneBotQqHost } = await import('./src/adapters/channels/onebot-qq.js');
+    const host = createOneBotQqHost({
+      config,
+      env: process.env,
+      logger: { debug() {}, info() {}, warn() {} }
+    });
+    if (!host) {
+      print(stdout, {
+        ok: false,
+        probed: false,
+        transport: config.im?.transport || null,
+        reason: 'onebot-v11 is not configured (set im.transport=onebot-v11 and im.onebot.baseUrl/websocketUrl)'
+      });
+      return 1;
+    }
+    const capabilities = await host.describeCapabilities();
+    const bot = host.loginInfo || null;
+    print(stdout, {
+      ok: capabilities.status === 'available',
+      probed: true,
+      capabilities,
+      bot,
+      bindingHint: bot?.botAccountId
+        ? {
+            adapterId: 'dsh-im',
+            botAccountId: bot.botAccountId,
+            senderRef: '<owner QQ number>',
+            conversationIds: [`private:<owner QQ number>`],
+            scopes: ['task.read.own', 'task.cancel.own', 'production.create']
+          }
+        : null
+    });
     return 0;
   }
 

@@ -55,6 +55,7 @@
   "im": {
     "enabled": false,
     "adapterId": "dsh-im",
+    "transport": "dsh-im",
     "maxMessageAgeSec": 600,
     "approvalTtlSec": 600,
     "groupReplies": "summary",
@@ -62,6 +63,13 @@
       "enabled": false,
       "minGapMs": 1500,
       "perMinute": 20
+    },
+    "onebot": {
+      "baseUrl": "",
+      "websocketUrl": "",
+      "accessTokenEnv": "ONEBOT_ACCESS_TOKEN",
+      "timeoutMs": 10000,
+      "reconnectMs": 5000
     }
   },
   "artifacts": {

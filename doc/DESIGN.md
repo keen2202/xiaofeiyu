@@ -3,7 +3,7 @@
 - 状态：**方向已确认；0.2.1-draft 已在本工作区实现（离线验证通过）；GATE-0 文档审阅与真实环境验收另行记录**
 - 版本：0.2.1-draft
 - 日期：2026-11-06
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步安全闸门、迁移/恢复协议与术语；2026-11-06 补齐prepare素材导入冻结；2026-11-09 本工作区按 0.2.1-draft 完成实现与 P1/P2 修复（离线测试 369 项、367 通过、0 失败、2 skip），详见 `report/IMPLEMENTATION_AUDIT_2026-11-09_POSTFIX.md`、`report/P1_P2_FIX_REPORT_2026-11-09.md`；2026-11-09 另在本地真实 DSH 0.2.2-rc.1 上完成宿主挂载探测（临时 profile，入口 0 警告、HTTP 路由 200/401/404、工具与生命周期接线），见 `report/DSH_HOST_PROBE_2026-11-09.md`。
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步安全闸门、迁移/恢复协议与术语；2026-11-06 补齐prepare素材导入冻结；2026-11-09 本工作区按 0.2.1-draft 完成实现与 P1/P2 修复（离线测试 369 项、367 通过、0 失败、2 skip），详见 `report/IMPLEMENTATION_AUDIT_2026-11-09_POSTFIX.md`、`report/P1_P2_FIX_REPORT_2026-11-09.md`；2026-11-09 另在本地真实 DSH 0.2.2-rc.1 上完成宿主挂载探测（临时 profile，入口 0 警告、HTTP 路由 200/401/404、工具与生命周期接线），见 `report/DSH_HOST_PROBE_2026-11-09.md`；同日按用户"IM 接入使用 QQ"方向实现可选的 OneBot v11 本地宿主编配（用户提供桥接端点、不捆绑 QQ SDK），真实 QQ 收发仍待端点后验证，见 `report/QQ_ONEBOT_INTEGRATION_2026-11-09.md`。
 - 项目目录：`D:/workbuddy_space/dsh-bili-unified`
 - 对应技术规范：`SPEC.md`（灾备契约见 §27，验收统一见 §19）
 - 对应实施拆解：`TASKS.md`（0.2.1-draft；账本 v3、FR-DR-001～010 与 T20～T22 已映射；§9 记忆规划仍待 GATE-MEM）
@@ -290,6 +290,7 @@ D-01～D-18 保留原架构方向；D-19～D-20 是本次获准写入的灾备�
 
 - **原因**：复用可信宿主身份/通道，避免自研聊天 SDK 与重复权限体系。
 - **影响**：只读能力探测后启用一个可选 `dsh-im` 桥接；不支持标记 `BLOCKED`，不可验证人类身份则审批 fail-closed。模型没有人工批准资格，通知只消费 outbox。
+- **可选宿主实现（2026-11-09 经用户授权补充）**：当宿主未提供 `dsh-im` 通道时，允许把用户自行部署的 OneBot v11 桥接作为 `dsh-im` 宿主的实现之一（插件只做 OneBot 协议的薄客户端，不捆绑 QQ/微信 SDK）。该实现不改变本节与 SPEC §22 的身份、审批、outbox 与幂等语义：首版仅消费私聊、sender 必须有本地 `im.bind` 绑定、人类证明保持 `unverified` 因而 IM 审批 fail-closed、无发送幂等/送达查询时未知结果不重投。见 `report/QQ_ONEBOT_INTEGRATION_2026-11-09.md`。
 
 ### D-16：停机单写者迁移
 

@@ -80,6 +80,7 @@ dsh-bili-unified/
       registry.js
       platforms/bilibili.js
       channels/dsh-im.js
+      channels/onebot-qq.js
       execution/local.js
     modules/
       browse.js
@@ -1147,6 +1148,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - outbox独立结算，不使已成功业务Task重新失败；pending/sending/unknown及仅有失败但未经核查的通知不得按留存期删除，其必需的Task归属/权限引用不得被普通Task清理删去。已sent/not_sent且超过通道重投窗口的记录可清理正文，但必须保留notificationId、Task/事件/回执摘要引用；迁移完整携带所有未决项与审计引用。
 - `FR-IM-006`：群聊只发summary或不发，不带完整脚本、私人日记、绝对路径、凭据或未经授权附件。首版产物回信仅含artifactId和摘要；不自行搭建公开下载链接服务。
 - `FR-IM-007`：dsh-im只有在已验证宿主消息来源、发送方式、事件ID、生命周期及人类证明后启用相应能力。未验证时报告unavailable/BLOCKED，不另接未经授权的QQ微信SDK。
+- **可选宿主实现（用户提供，2026-11-09 授权补充）**：`dsh-im` 的宿主实现可以是操作者自行部署的标准 OneBot v11 桥接（HTTP action API + forward WebSocket），插件只做薄客户端，不捆绑 QQ/微信 SDK，也不新增第二套 IM 子系统。该实现必须保持本章全部语义：入站 sender 只能经本地 `im.bind` 绑定推导 principal；人类证明无法由 OneBot 提供，故 `humanAssurance=unverified`，IM 审批保持 fail-closed；首版只消费私聊、不接群；OneBot 无发送幂等键与送达查询，`delivery.query/idempotent=false`，超时或不可解析的发送结果保持 unknown 且不自动重投。端点与 token 只在本地配置/环境变量中提供，不进入 HTTP 配置 PATCH、迁移包或报告。
 - `FR-IM-008`：MockChannel只能证明契约行为；真实IM交付至少验证一次授权消息→草稿Task→人类审批/拒绝→状态回信。真实消息发送需单独用户授权；无条件时交付报告必须列未实测/阻塞，不静默标完成。
 
 ## 23. ArtifactStore 契约

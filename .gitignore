@@ -25,3 +25,4 @@ Thumbs.db
 .dsh-probe/debug.mjs
 .dsh-probe/grep-cordis.mjs
 .dsh-probe/extract-cordis.mjs
+.dsh-probe/im-onebot-*/

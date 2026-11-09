@@ -94,12 +94,15 @@ const NESTED_KEYS = {
   im: new Set([
     'enabled',
     'adapterId',
+    'transport',
     'maxMessageAgeSec',
     'approvalTtlSec',
     'groupReplies',
-    'notifications'
+    'notifications',
+    'onebot'
   ]),
   'im.notifications': new Set(['enabled', 'minGapMs', 'perMinute']),
+  'im.onebot': new Set(['baseUrl', 'websocketUrl', 'accessTokenEnv', 'timeoutMs', 'reconnectMs']),
   artifacts: new Set(['directory', 'maxImportBytes']),
   production: new Set([
     'enabled',
@@ -212,6 +215,25 @@ function requireAbsoluteOrEmpty(value, label) {
   if (value === '') return;
   if (!path.isAbsolute(value)) {
     throw new AppError('CONFIG_INVALID', `${label} must be an absolute path`, { details: { path: label } });
+  }
+}
+
+/** Optional URL setting: empty is allowed, otherwise the protocol must match. */
+function requireHttpsOrEmpty(value, label, protocols) {
+  if (typeof value !== 'string') {
+    throw new AppError('CONFIG_INVALID', `${label} must be a string`, { details: { path: label } });
+  }
+  if (value === '') return;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new AppError('CONFIG_INVALID', `${label} must be an absolute URL`, { details: { path: label } });
+  }
+  if (!protocols.includes(parsed.protocol)) {
+    throw new AppError('CONFIG_INVALID', `${label} must use ${protocols.join('|')}`, {
+      details: { path: label, protocol: parsed.protocol }
+    });
   }
 }
 
@@ -335,11 +357,38 @@ export function validateConfig(input) {
   requireAbsoluteOrEmpty(input.diary.directory, 'diary.directory');
 
   requireEnum(input.im.adapterId, 'im.adapterId', ['dsh-im']);
+  requireEnum(input.im.transport, 'im.transport', ['dsh-im', 'onebot-v11']);
   requireInteger(input.im.maxMessageAgeSec, 'im.maxMessageAgeSec', 60, 3600);
   requireInteger(input.im.approvalTtlSec, 'im.approvalTtlSec', 60, 3600);
   requireEnum(input.im.groupReplies, 'im.groupReplies', ['summary', 'none']);
   requireInteger(input.im.notifications.minGapMs, 'im.notifications.minGapMs', 1000, 86400000);
   requireInteger(input.im.notifications.perMinute, 'im.notifications.perMinute', 0, 60, { allowZero: true });
+
+  // Optional local QQ bridge over OneBot v11 (user-supplied implementation; no
+  // QQ SDK is bundled by this plugin). Endpoint/token do not enable anything by
+  // themselves: im.enabled, local bindings and human approval rules still apply.
+  const onebot = input.im.onebot;
+  requireHttpsOrEmpty(onebot.baseUrl, 'im.onebot.baseUrl', ['http:', 'https:']);
+  requireHttpsOrEmpty(onebot.websocketUrl, 'im.onebot.websocketUrl', ['ws:', 'wss:']);
+  if (typeof onebot.accessTokenEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(onebot.accessTokenEnv)) {
+    throw new AppError('CONFIG_INVALID', 'im.onebot.accessTokenEnv must be an environment variable name', {
+      details: { path: 'im.onebot.accessTokenEnv' }
+    });
+  }
+  requireInteger(onebot.timeoutMs, 'im.onebot.timeoutMs', 1000, 60000);
+  requireInteger(onebot.reconnectMs, 'im.onebot.reconnectMs', 1000, 600000);
+  if (input.im.transport === 'onebot-v11' && input.im.enabled === true) {
+    if (onebot.baseUrl === '') {
+      throw new AppError('CONFIG_INVALID', 'im.onebot.baseUrl is required when im.transport is onebot-v11', {
+        details: { path: 'im.onebot.baseUrl' }
+      });
+    }
+    if (onebot.websocketUrl === '') {
+      throw new AppError('CONFIG_INVALID', 'im.onebot.websocketUrl is required when im.transport is onebot-v11', {
+        details: { path: 'im.onebot.websocketUrl' }
+      });
+    }
+  }
 
   requireAbsoluteOrEmpty(input.artifacts.directory, 'artifacts.directory');
   requireInteger(input.artifacts.maxImportBytes, 'artifacts.maxImportBytes', 1, Number.MAX_SAFE_INTEGER);

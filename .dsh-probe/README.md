@@ -9,6 +9,7 @@
 | `extract.mjs` | 按包清单把 README/package.json/lib 源码抽取到 `.dsh-probe/dsh-src/`，并检索插件市场中的 QQ/IM 线索 |
 | `extract-one.mjs` | 抽取单个包（`extract-one.mjs dsh-tools .`），用于核对具体契约实现 |
 | `probe-host.ps1` | 用临时 `DSH_HOME=.dsh-probe-home` + `probe` profile 启动真实 DSH，校验入口激活、HTTP 路由、信任门禁与生命周期，结果写入 `.dsh-probe/host-probe-result.json` |
+| `onebot-stub.mjs` | 最小 OneBot v11 HTTP stub（`get_status`/`get_login_info`/`send_private_msg`），只用于 `im probe` 协议通路验证，不是 QQ 桥接，也不发送真实消息 |
 
 运行前置：
 
