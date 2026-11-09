@@ -3,7 +3,7 @@ import { ConfigService, computeConfigHash } from './config.js';
 import { JsonStore, DEFAULT_ALLOWED_CAPABILITIES } from './store.js';
 import { EventJournal } from './event-journal.js';
 import { TaskManager } from './task-manager.js';
-import { IdentityService, HumanProofService, TtyHumanVerifier } from './identity.js';
+import { IdentityService, HumanProofService, TtyHumanVerifier, makePrincipal } from './identity.js';
 import { ApprovalService } from './approval.js';
 import { RateLimiter } from './rate-limiter.js';
 import { EffectGateway } from './effect-gateway.js';
@@ -29,6 +29,23 @@ export const HTTP_PREFIX = '/dsh-bili-unified/api';
 export const MOUNT_SCHEMA_VERSION = 1;
 const MAX_HTTP_BODY = 1024 * 1024;
 const MODES = new Set(['dry', 'go']);
+
+/**
+ * Scopes an agent principal created from a real DSH tool call may hold. Model
+ * tools can create drafts, run a local browse, read/cancel their own tasks and
+ * request production/publish drafts; they can never approve, resolve, configure,
+ * migrate or back up (SPEC §17.2).
+ */
+export const HOST_AGENT_SCOPES = Object.freeze([
+  'browse.run',
+  'comment.draft',
+  'dm.send',
+  'diary.generate.own',
+  'production.create',
+  'publish.create',
+  'task.read.own',
+  'task.cancel.own'
+]);
 
 export function sanitizeErrorMessage(message) {
   let text = String(message ?? '');
@@ -576,6 +593,47 @@ export async function createRuntime(options = {}) {
         switchAccount,
         ownerMid: configService.get().owner.mid
       });
+    },
+    /**
+     * Map a real DSH connection Peer to a core principal. Only an owner Peer
+     * (authenticated browser session or API owner token) may act through HTTP;
+     * everything else fails closed.
+     */
+    async resolveHostPrincipal(peer) {
+      const kind = peer?.principal?.kind;
+      if (kind !== 'owner') {
+        throw new AppError('FORBIDDEN', 'host peer is not an owner peer', {
+          details: { reason: 'host_peer_not_owner' }
+        });
+      }
+      return store.transaction(async (draft, tx) => identity.ensureLocalOwner(tx));
+    },
+    /**
+     * Map a real DSH tool-call agent to a restricted core agent principal. The
+     * principal is persisted once and reused by later calls of the same agent,
+     * so task ownership and idempotency remain stable across turns.
+     */
+    async resolveAgentPrincipal(agentContext) {
+      const agentId = agentContext?.id
+        || agentContext?.session?.id
+        || agentContext?.sessionId
+        || 'unknown-agent';
+      const principalId = `dsh-agent:${String(agentId)}`;
+      const state = await store.getSnapshot();
+      const existing = state.principals?.[principalId];
+      if (existing && !existing.revokedAt) return existing;
+      const principal = makePrincipal({
+        id: principalId,
+        kind: 'agent',
+        role: 'agent',
+        sourceKind: 'host_agent',
+        scopes: HOST_AGENT_SCOPES,
+        workspaceId: state.workspaceId
+      });
+      await store.transaction(async (draft) => {
+        draft.principals[principalId] = principal;
+      });
+      return principal;
     },
     async start() {
       maintenance.start();
@@ -1198,6 +1256,164 @@ export async function establishTrustedRequest(ctx = {}, hostRequest = {}) {
   };
 }
 
+const HOST_BODY_LIMIT = MAX_HTTP_BODY;
+
+/**
+ * Read and parse a JSON body from a Node `IncomingMessage`. Hosts that already
+ * parsed the body pass an object, which the real DSH webserver does not do, but
+ * adapters and tests may. Oversized or malformed bodies fail closed.
+ */
+export async function readNodeRequestBody(req, maxBytes = HOST_BODY_LIMIT) {
+  if (req && req.body !== undefined && req.body !== null && typeof req.body === 'object') return req.body;
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      throw new AppError('CONFIG_INVALID', 'request body exceeds 1MiB', {
+        details: { reason: 'body_too_large' }
+      });
+    }
+    chunks.push(chunk);
+  }
+  if (size === 0) return {};
+  const text = Buffer.concat(chunks).toString('utf8');
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new AppError('CONFIG_INVALID', 'request body must be valid JSON');
+  }
+}
+
+/** Write a JSON response through a Node `ServerResponse`. */
+export function writeNodeJson(res, status, body) {
+  const text = JSON.stringify(body ?? {});
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-length': Buffer.byteLength(text)
+  });
+  res.end(text);
+}
+
+/**
+ * Admit one real DSH request through `ctx.connection`. Returns a live Peer or a
+ * numeric rejection. Missing trust services fail closed (SPEC §17.1).
+ */
+export async function admitHostRequest(ctx = {}, hostRequest = {}, connectionOverride = undefined) {
+  let connection;
+  if (connectionOverride !== undefined) connection = connectionOverride;
+  else {
+    try { connection = ctx?.connection; } catch { connection = null; }
+  }
+  if (connection && typeof connection.admit === 'function') {
+    const admission = await connection.admit(hostRequest);
+    if (admission && admission.peer) return { peer: admission.peer };
+    const rejection = Number(admission?.rejection);
+    return { rejection: Number.isFinite(rejection) && rejection >= 400 ? rejection : 401 };
+  }
+  if (connection && typeof connection.requestRejection === 'function') {
+    const rejection = await connection.requestRejection(hostRequest);
+    if (rejection !== undefined && rejection !== null && rejection !== false) {
+      const code = Number(rejection);
+      return { rejection: Number.isFinite(code) && code >= 400 ? code : 403 };
+    }
+    // requestRejection only fences Host/Origin; without admission there is no
+    // authenticated principal, so the entry must stay closed.
+    return { rejection: 401 };
+  }
+  return { rejection: 503 };
+}
+
+/**
+ * Build the real DSH `webServer.register` handler for the plugin API route.
+ * Node incoming requests are admitted through the host connection service; an
+ * admitted browser owner peer maps to the local owner principal, while an API
+ * peer has no human context (sensitive actions fail closed).
+ */
+export function createHostHttpHandler({
+  ctx,
+  runtime,
+  logger,
+  connection: connectionOverride = undefined,
+  resolveConnection = undefined
+}) {
+  // The trust service may be provided after this plugin activates (Cordis
+  // services appear when their owning entry activates), so resolve it per
+  // request instead of caching the value observed at mount time.
+  const connectionFor = () => {
+    if (connectionOverride !== undefined) return connectionOverride;
+    if (typeof resolveConnection === 'function') {
+      try {
+        const resolved = resolveConnection();
+        if (resolved !== undefined) return resolved;
+      } catch {
+        // fall through to the plain property probe below
+      }
+    }
+    try { return ctx?.connection; } catch { return undefined; }
+  };
+  return async function hostHttpHandler(req, res) {
+    try {
+      let body;
+      try {
+        body = await readNodeRequestBody(req);
+      } catch (error) {
+        const { status, body: errorBody } = errorResponse(error);
+        writeNodeJson(res, status, errorBody);
+        return;
+      }
+      let admission;
+      const connection = connectionFor();
+      try {
+        admission = await admitHostRequest(ctx, req, connection);
+      } catch (error) {
+        const { status, body: errorBody } = errorResponse(
+          new AppError('TRUST_UNAVAILABLE', 'host trust check failed', { cause: error })
+        );
+        writeNodeJson(res, status, errorBody);
+        return;
+      }
+      if (admission.rejection) {
+        writeNodeJson(res, admission.rejection, {
+          code: 'TRUST_UNAVAILABLE',
+          message: 'host request was rejected',
+          retryable: false,
+          details: { reason: 'host_admission_rejected' }
+        });
+        return;
+      }
+      let result;
+      try {
+        if (typeof runtime.resolveHostPrincipal !== 'function') {
+          throw new AppError('TRUST_UNAVAILABLE', 'host principal resolution is unavailable');
+        }
+        const principal = await runtime.resolveHostPrincipal(admission.peer);
+        const browserPeer = connection?.browserPeer;
+        const isBrowser = Boolean(browserPeer) && admission.peer === browserPeer;
+        result = await runtime.http({
+          method: String(req.method || 'GET').toUpperCase(),
+          url: String(req.url || '/'),
+          headers: req.headers || {},
+          body,
+          trustedContext: { trusted: true, principal, reason: 'dsh_connection' },
+          trustedHumanContext: isBrowser
+            ? { principal, sourceKind: 'host_browser', verifiedBy: 'dsh_connection' }
+            : null
+        });
+      } catch (error) {
+        const { status, body: errorBody } = errorResponse(error);
+        writeNodeJson(res, status, errorBody);
+        return;
+      }
+      writeNodeJson(res, result?.status ?? 500, result?.body ?? {});
+    } catch (error) {
+      logger?.warn?.('dsh http bridge failed', { code: error.code, message: sanitizeErrorMessage(error.message) });
+      writeNodeJson(res, 500, { code: 'DEPENDENCY_UNAVAILABLE', message: 'host bridge failure', retryable: false });
+    }
+  };
+}
+
 function errorResponse(error) {
   const appError = error instanceof AppError
     ? error
@@ -1216,22 +1432,72 @@ function errorResponse(error) {
  */
 export const plugin = {
   name: 'dsh-bili-unified',
-  async apply(ctx = {}) {
+  // Cordis defers activation until every injected service exists. Both entries
+  // are provided by sibling composition entries that may activate after this
+  // one, and a plain "try to read the service" probe cannot wait for them.
+  // Non-Cordis hosts ignore `inject`; the adapter still tolerates missing
+  // services and fails closed.
+  inject: ['webServer', 'tools'],
+  async apply(ctx = {}, entryConfig = undefined) {
     if (!ctx || typeof ctx !== 'object') return null;
-    if (ctx.__biliUnifiedRuntime) return ctx.__biliUnifiedRuntime;
-    const logger = ctx.logger || console;
-    const mount = resolveMountConfig(ctx);
+    // Cordis contexts are proxies that throw for undeclared properties. Read
+    // services through `ctx.get()` first (it needs no `inject` declaration and
+    // returns undefined instead of throwing), then fall back to plain property
+    // access for mock and legacy hosts.
+    const safeGet = (name) => {
+      try {
+        if (typeof ctx.get === 'function') {
+          const service = ctx.get(name);
+          if (service !== undefined) return service;
+        }
+      } catch {
+        // not resolvable through the service registry; try the plain property
+      }
+      try {
+        return ctx?.[name];
+      } catch {
+        return undefined;
+      }
+    };
+    const existingRuntime = safeGet('__biliUnifiedRuntime');
+    if (existingRuntime) {
+      // A duplicate mount (duplicate config entry or hot reload) must not build
+      // a second runtime over the same data directory. Cordis treats the
+      // application's return value as an effect, so the idempotent guard must
+      // be a disposer function rather than the runtime object itself.
+      if (typeof safeGet('webServer')?.register === 'function') {
+        const guard = () => undefined;
+        Object.assign(guard, {
+          runtime: existingRuntime,
+          dispose: async () => undefined,
+          mounted: true
+        });
+        return guard;
+      }
+      return existingRuntime;
+    }
+    const logger = safeGet('logger') || console;
+    const hostConfig = entryConfig ?? safeGet('config');
+    const mount = resolveMountConfig({
+      config: hostConfig,
+      dataDir: safeGet('dataDir'),
+      businessConfig: safeGet('businessConfig')
+    });
     if (mount.disabled) return null;
+    const webServer = safeGet('webServer');
+    const tools = safeGet('tools');
+    const lifecycle = safeGet('lifecycle');
+    const toolsModuleInjected = safeGet('dshToolsModule');
     let runtime = null;
-    const factory = ctx.createRuntime || createRuntime;
+    const factory = safeGet('createRuntime') || createRuntime;
     const shouldCreateRuntime = Boolean(mount.dataDir || mount.businessConfig || mount.mountPresent);
     if (shouldCreateRuntime) {
       runtime = await factory({
         dataDir: mount.dataDir,
         config: mount.businessConfig,
-        env: ctx.env || process.env,
-        humanVerifier: ctx.humanVerifier || null,
-        imHost: ctx.imHost || null,
+        env: safeGet('env') || process.env,
+        humanVerifier: safeGet('humanVerifier') || null,
+        imHost: safeGet('imHost') || null,
         logger
       });
       ctx.__biliUnifiedRuntime = runtime;
@@ -1259,9 +1525,23 @@ export const plugin = {
       }
       ctx.__biliUnifiedRuntime = null;
     };
-    if (runtime && typeof ctx.webServer?.registerHandler === 'function') {
+    const realHost = typeof webServer?.register === 'function';
+    if (runtime && realHost) {
       disposers.push(
-        await ctx.webServer.registerHandler({
+        webServer.register({
+          kind: 'prefix',
+          path: mount.httpPrefix,
+          handler: createHostHttpHandler({
+            ctx,
+            runtime,
+            logger,
+            resolveConnection: () => safeGet('connection')
+          })
+        })
+      );
+    } else if (runtime && typeof webServer?.registerHandler === 'function') {
+      disposers.push(
+        await webServer.registerHandler({
           prefix: mount.httpPrefix,
           handler: async (hostRequest) => {
             try {
@@ -1274,10 +1554,54 @@ export const plugin = {
         })
       );
     }
-    if (runtime && typeof ctx.tools?.register === 'function') {
+    if (runtime && realHost && typeof tools?.register === 'function') {
+      // Real DSH tool registry: typed definitions executed by the host pipeline.
+      // `ctx.dshToolsModule` is an injection point for tests/probe harnesses;
+      // a real mount resolves the host-provided module by specifier. When the
+      // host module is not importable from the plugin package location (e.g. a
+      // linked probe install), build the registry-ready shape directly.
+      const toolsModule = toolsModuleInjected || await import('@deepseek-ai/dsh-tools').catch(() => null);
+      const defineTool = toolsModule?.defineTool;
+      const toolParameters = {
+        type: 'object',
+        properties: {
+          request: { type: 'object', additionalProperties: true, description: 'Action payload' }
+        },
+        additionalProperties: false
+      };
+      const buildDefinition = (spec) => {
+        const execute = async (args, exec) => {
+          const principal = await runtime.resolveAgentPrincipal(exec?.agent);
+          return spec.execute(args?.request ?? {}, principal, { sourceKind: 'agent', exec });
+        };
+        const output = {
+          schema: { type: 'object', additionalProperties: true },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }]
+        };
+        if (typeof defineTool === 'function') {
+          return defineTool({
+            name: spec.name,
+            description: spec.description,
+            parameters: { request: { type: 'json' } },
+            output: { schema: { type: 'json' }, render: output.render },
+            execute
+          });
+        }
+        return {
+          name: spec.name,
+          description: spec.description,
+          parameters: toolParameters,
+          output,
+          execute
+        };
+      };
+      for (const spec of runtime.tools) {
+        disposers.push(await tools.register(buildDefinition(spec)));
+      }
+    } else if (runtime && typeof tools?.register === 'function') {
       for (const tool of runtime.tools) {
         disposers.push(
-          await ctx.tools.register({
+          await tools.register({
             name: tool.name,
             description: tool.description,
             sensitive: tool.sensitive === true,
@@ -1286,11 +1610,28 @@ export const plugin = {
         );
       }
     }
-    if (typeof ctx.lifecycle?.onDispose === 'function') {
-      const result = ctx.lifecycle.onDispose(dispose);
+    const mounted = { runtime, dispose, mounted: runtime !== null, httpPrefix: mount.httpPrefix };
+    if (realHost) {
+      // Cordis treats a plugin callback's return value as an effect: it must be
+      // a disposer function (or iterable of them), never an arbitrary object.
+      // Registering the disposer this way is the canonical effect; calling
+      // `ctx.effect` as well would collect a second wrapper for the same work.
+      const pluginDisposer = () => dispose();
+      Object.assign(pluginDisposer, mounted);
+      return pluginDisposer;
+    }
+    const effect = safeGet('effect');
+    if (typeof effect === 'function') {
+      try {
+        effect.call(ctx, () => dispose, 'dsh-bili-unified lifecycle');
+      } catch {
+        // legacy hosts may expose a non-callable effect helper; ignore it
+      }
+    } else if (typeof lifecycle?.onDispose === 'function') {
+      const result = lifecycle.onDispose(dispose);
       if (typeof result === 'function') disposers.push(result);
     }
-    return { runtime, dispose, mounted: runtime !== null, httpPrefix: mount.httpPrefix };
+    return mounted;
   }
 };
 

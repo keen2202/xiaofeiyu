@@ -259,6 +259,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 #### T16.2：真实 dsh-im 只读能力探测与薄适配【BLOCKED】
 
+**实现状态（2026-11-09 探测，保持 BLOCKED）**：本机 DSH 0.2.2-rc.1 未提供 dsh-im 宿主通道（`status.im` 为 enabled=false / configured=false / reason=disabled，属未启用而非加载失败），QQ 客户端在运行但未发现 OneBot/NapCat 类桥接监听；无可信宿主消息来源，按 FR-IM-007 不启用任何 IM 能力，也不以 Mock 冒充真实接入（见 `report/DSH_HOST_PROBE_2026-11-09.md` §6）。解除条件：提供可访问的真实 dsh-im 宿主或用户授权的 OneBot v11 桥接端点，并完成只读能力/身份语义探测。
+
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
 **目标文件**：`src/adapters/channels/dsh-im.js`、`test/dsh-im-adapter.test.js`；真实证据写入获批后的交付记录，不采集秘密/无关聊天正文。
@@ -389,6 +391,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 **先写失败测试与验收**：FR-DR-005～009及§19.5。以10:00cut、10:05已发、10:06丢账验证缺记录不能重发；reserved之后执行、unknown费用、原ID丢失、仅日记摘要、伪确认、冲突回执均保留恰当冻结。覆盖workspace/account.action/provider.budget/bot.conversation的scope包含、交集、通配、父hold与部分解冻矩阵，以及unknownExposure=null封顶拒绝；新epoch、新requestId、换Cookie均不得绕过。新epoch同裸seq不覆盖旧归档，旧权限/nonce/票据不复活。无旧写者隔离不得写；可靠隔离＋完整scope核查后可仅开该scope，其余继续hold。逐一注入recovery.json prepared/committed、state摘要和instance能力各写入断电点，证明revision不一致fail-closed、可幂等续办且最后一步前零派发；新恢复点仍携历史缺口。正常迁移保留epoch的组合验收在T18/T22，不让T21反向依赖迁移。
 
 ### T10：Coordinator、惰性 DSH/CLI 与主体权限【PENDING】
+
+**实现状态（2026-11-09 探测，不改变 PENDING）**：真实本地 DSH 0.2.2-rc.1 已通过临时 profile 完成宿主挂载探测：入口 0 警告激活、`webServer.register` 前缀路由生效（owner 200 / 匿名 401 / 未知路由 404）、工具注册与卸载释放均按契约工作，见 `report/DSH_HOST_PROBE_2026-11-09.md`。该证据只覆盖宿主适配与只读 HTTP/工具接线；CLI/工具全链路、T20/T21/T18 完整门禁与真实 IM 仍未验收，T10 不得因此标为 DONE。
 
 **依赖**：基础接线为 T05、T06、T07、T08、T09、T14、T16.1、T17.2 和 T18 正向部分，可先使用隔离的备份/恢复门禁替身；完整门禁接线与 T10 DONE 另需 T20、T21 和 T18 完整验收。T22/T19/T11 使用完整 T10，不得提前把基础接线标为完成。
 

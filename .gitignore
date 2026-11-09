@@ -15,3 +15,13 @@ Thumbs.db
 .audit-tmp/
 .acl-recovery/
 .test-tmp-*/
+
+# Local DSH capability-probe artifacts (scripts under .dsh-probe/ are kept;
+# extracted ASAR sources, logs and raw results stay machine-local)
+.dsh-probe-home/
+.dsh-probe/dsh-src/
+.dsh-probe/*.json
+.dsh-probe/*.txt
+.dsh-probe/debug.mjs
+.dsh-probe/grep-cordis.mjs
+.dsh-probe/extract-cordis.mjs
