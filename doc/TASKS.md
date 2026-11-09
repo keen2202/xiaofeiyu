@@ -1,7 +1,7 @@
 # dsh-bili-unified 实施任务与验收计划
 
 - 版本：**0.2.1-draft**
-- 状态：**方向已确认；修订稿待审核；GATE-0 未解除；核心未实施**
+- 状态：**方向已确认；0.2.1-draft 已在本工作区实现（离线验证通过）；GATE-0 文档审阅与真实环境验收另行记录**
 - 日期：2026-11-07
 - 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
 - 项目根目录：`D:/workbuddy_space/dsh-bili-unified`
@@ -904,9 +904,9 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 ### 10.2 本轮验证结果
 
-- `npm run check`：91 个源/测试/脚本文件语法检查通过。
-- `npm test`：48 个自动测试文件，**215 项通过 / 0 失败**，无 skip；全部使用临时目录与 Mock/替身，不访问真实平台、不发真实 IM、不写真实用户数据目录。
-- `npm run test:coverage`：行覆盖 79.41%、分支 62.77%、函数 72.12%（215 项通过）。
+- `npm run check`：98 个源/测试/脚本文件语法检查通过（2026-11-09 P1/P2 修复后）。
+- `npm test`：**369 项、367 通过 / 0 失败 / 2 skipped**；2 项 skip 为 Windows 符号链接 fixture 权限限制（`artifact file symlink`、`migration file symlink`），不记为通过。全部使用临时目录与 Mock/替身，不访问真实平台、不发真实 IM、不写真实用户数据目录。
+- 覆盖率：2026-11-09 未复跑；下行为 2026-11-07 历史数字（215 项时）：行覆盖 79.41%、分支 62.77%、函数 72.12%。新增 5 个 `test/fix-*.test.js` 与大量断言后覆盖率应重新测量，不得沿用旧值。
 - `node test/manual/local-production.acceptance.mjs`：0 失败；真实 ffmpeg/ffprobe 6.1.1；图片+片段+音轨+字幕输出 640×360/25fps/3.5s MP4 与可读封面；无配音输出 480×270/20fps/3s MP4，voice 为带证据的合法 skipped；缺工具返回 BLOCKED。
 - 所有真实媒体产物仅写入隔离临时目录；未提交用户素材、凭据、真实数据目录或未脱敏证据。
 
@@ -955,3 +955,26 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 7. **disable-target 活目标竞态 / rollback 重试重复激活**：disable-target 要求 stop attestation 并在写入后回读；rollback 先持久化 prepared 决定，崩溃/重试复用同一反向 id 和目的地，已激活则只补记源账本，不第二次激活；新增源账本提交前崩溃的重试测试。
 8. **备份索引并发写**：create 完成写入、verify、dailyVerify、noteRestoreTest、prune 的 index read-modify-write 已通过进程内串行锁合并，避免长复制覆盖 restoreTested/每日复查状态。
 上述修复后 `npm run check` 91 文件通过，`npm test` 215 项全部通过，`npm run test:coverage` 行覆盖 79.41%、分支 62.77%、函数 72.12%。这仍只是 A 组代码范围审查，不替代 T11 全量人工审查，也不改变 §10.3 的真实外部项 BLOCKED 状态。
+
+### 10.6 P1/P2 缺口修复记录（2026-11-09）
+
+依据 `report/IMPLEMENTATION_AUDIT_2026-11-09_POSTFIX.md` 的 P1/P2 清单，按 `report/FIX_PLAN_P1_P2_2026-11-09.md` 的接口契约与文件所有权并行修复；完整逐项证据见 `report/P1_P2_FIX_REPORT_2026-11-09.md`。
+
+**P1（安全/正确性）已闭环（离线）**
+- 评论审批目标绑定：拒绝调用方 `platformData`，aid/cid 由适配器解析并纳入 `inputHash`，修正 bilibili aid 必填条件。
+- 凭据变更 fail-closed：`CredentialService.assertWriteAllowed/describeBinding/reconcileCredentialBinding`，写预留与派发事务内校验 `credentialRevision`，Operation 记录凭据版本。
+- B 站风控：HTTP 412/429（含非 JSON）先于解析触发熔断、`retryable=false`、支持 HTTP-date `Retry-After`；-101/-111 登录失效写入按账号 `authPaused`，`account resume` 可人工恢复。
+- 浏览账号隔离：视频历史键改为 `bilibili:<accountId>:<BV>` 并兼容旧键；新增 `browse.failureCooldownMinutes`、`browse.allowNoSubtitle`。
+- 父任务聚合：已结算 failed/partial/unknown 子任务纳入 partial/unknown；browse 父任务不因后置失败被降为 failed；`superseded` 审批不再阻塞结算。
+- 日记调度：`afterBrowse` 接线、双 book 分别生成、仅成功推进游标、定时/手动统一 `_exclusive('diary')`、`force` 生效、事实哈希复用叙述、`markDirty/__pendingRebuild` 支持 resolve 后重建、恢复来源与缺口标注。
+- 配置更新：可恢复提交协议（`.next` → `configIntent` → rename → revision 事务）、启动 reconcile、强制 `expectedRevision`、sha+version 双校验、`onChange` 动态刷新调度器与客户端。
+- 审批失效与执行上下文：迁机/恢复失效标记在 `assertApproved`/`decide` 拒绝；`ExecutionDispatchContext` 由核心签发并由本地执行后端校验/一次性消费；新增 `operation.cancel`（未派发证据）。
+- 迁移/灾备：sealed 晚到回执回退 quiescing 并作废封存包、重新 export 换 hash；release 回执 cut 取自 sealed manifest；新增 `migration release-hold`；`uncertaintyRange` 由隔离证据闭合且 authorize 校验覆盖；authorize 前置区间/修复证据/账号重验/新 verified 恢复点；prepare 扫描存活执行属主并要求停止证据。
+- 入口：宿主信任栅栏接入或 fail-closed、CLI 写命令统一 `CommandService`（稳定 requestId/sourceKind）、人类证明展示绑定内容、mode 缺失拒绝、`/comments/approve` 限定 comment、IM 移除 `task.resume`、`--confirm` 强制、CLI status 只读、挂载 `enabled` 消费与 lifecycle 注销、可选模块动态 import。
+- 备份索引跨进程一致性：备份库索引文件锁 + 版本 CAS，prune 引用保护/媒体覆盖校验/容量预检、`mediaUnprotected` 标记。
+
+**P2（一致性/可维护性）已完成**：Task revision 递增与组合校验、读重试重预留与读时间槽、`BilibiliClient.reconfigure` 与可选 store/rateLimiter、Cookie 重定向白名单、resolve 幂等与 External BV 校验、适配器 `validatePublishMetadata`、External 输出脱敏、`publish void`、publisher 输入 schema 校验、DM 冷却事务内检查、归档幂等、容量统计缓存、100MiB 门禁统一 helper、并发归档误报修复、profileDependencies、import 容量与旧 PID sanitize、activate 重验与 sourceStopped、恢复副本 manifest 父链、outbox capturedStatus、`preserveCorruptSource`、exposureId 关联、日志/错误脱敏、`/tasks/:id` 字段白名单投影、HTTP 全路由与错误码测试补齐等。
+
+**验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
+
+**仍未完成/未实测**：T16.2 真实 DSH/IM 只读探测、T12.1 真实 IM 闭环、T12.2 真实 B 站写/External、T12.3 真实跨 OS 迁移、T17.3 真实媒体（本机无 ffmpeg/ffprobe）、T22 真实故障域/介质/RPO-RTO；`§9` 记忆规划待 GATE-MEM。上述均为真实环境/授权门槛，离线测试通过不替代。

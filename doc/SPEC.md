@@ -1,13 +1,13 @@
 # dsh-bili-unified 技术规范（Spec）
 
-- 状态：**架构方向已确认，修订稿待审核，未批准核心实施**
+- 状态：**架构方向已确认；0.2.1-draft 已在本工作区实现（离线验证通过）；真实环境验收未完成**
 - 规范版本：0.2.1-draft
 - 日期：2026-11-06
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 完成文档一致性与可执行性修订；2026-11-06 按二次复核收尾测试分类、requestKey与交叉引用。不改变 GATE-0，不代表代码实施或真实环境验证。
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 完成文档一致性与可执行性修订；2026-11-06 按二次复核收尾测试分类、requestKey与交叉引用；2026-11-09 记录本工作区实现与 P1/P2 修复（离线测试 369 项、367 通过、0 失败、2 skip），不改变 GATE-0，不代表真实环境验证。
 - 设计依据：`DESIGN.md`
 - 实施拆解：`TASKS.md`（0.2.1-draft；新增灾备条款、账本 v3、FR-DR-001～010 与 T20～T22 已同步到任务表）
 
-本文使用“必须/可以/不得”表示约束强度；“必须/不得”为强制要求，“可以”为明确允许的可选行为。§4.3 的普通业务默认配置仍与未修改的 `config.example.json` 一致；新增本地备份策略独立定义于 §27，不是已经接线的运行配置。DESIGN/SPEC/TASKS 已同步 0.2.1-draft 的灾备契约、任务映射与验收口径，真实环境验收统一受 FR-DR-002 和 TASKS T12.1/T12.2 的强制前置约束；本次复核修订不修改示例配置或代码，不表示任何备份执行、环境验证或实施批准。
+本文使用“必须/可以/不得”表示约束强度；“必须/不得”为强制要求，“可以”为明确允许的可选行为。§4.3 的普通业务默认配置与 `config.example.json` 一致（2026-11-09 增补 `browse.failureCooldownMinutes` 与 `browse.allowNoSubtitle`）；新增本地备份策略独立定义于 §27，不是已经接线的运行配置。核心与业务模块已在本工作区实现并有离线测试；真实环境验收统一受 FR-DR-002 和 TASKS T12.1/T12.2 的强制前置约束。离线测试通过不表示任何真实平台写入、真实 IM、媒体工具执行或备份执行已获授权或已验证。
 
 本版采用“轻核心＋可选适配器＋独立生产执行”。本期跨端能力为同插件兼容格式的停机迁移；远程执行、X 和抖音只保留契约与测试替身，不实现常驻服务或平台 SDK。
 
@@ -171,7 +171,9 @@ Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或
     "minSubtitleChars": 80,
     "minScore": 20,
     "maxDurationSec": 3600,
-    "markWatchHistory": false
+    "markWatchHistory": false,
+    "failureCooldownMinutes": 360,
+    "allowNoSubtitle": false
   },
   "comments": {
     "enabled": false,
@@ -286,6 +288,7 @@ Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或
 - 所有 `enabled` 以及 `dryRun`、`requireApproval`、`autoPublish`、`requireMutual`、`markWatchHistory`、`allowTemplate`、`afterBrowse`、`daily`、`publicBook`、`privateBook`、`successJson`、`allowExternalPublisher`、`allowLocalProducer` 必须为布尔值，不得用数字或字符串代替；布尔字段不得参与数值转换。
 - `scheduler.tickSeconds >= 15`；`scheduler.diaryTime` 必须是 24 小时制 `HH:mm`（`00:00`～`23:59`），由 `timeZone` 解释。
 - `browse.perRound` 为 1–20；`candidatePool` 为 1–100；`comments/directMessages` 的 `perRound/dailyLimit` 为 0–20，0 表示不自动执行。
+- `browse.failureCooldownMinutes` 为 0–10080 的整数，0 表示失败后不再按时间冷却（永久业务键仍有效）；`browse.allowNoSubtitle` 必须为布尔值，true 允许无字幕候选以标题/简介继续（仍不得伪报"已看懂"）。
 - `comments.mode` 仅允许 `approval|auto`。
 - `sameVideoDays` 为 0–365；0 表示不再按时间放开同一业务键，永久幂等键仍有效。
 - `owner.mid` 必须为非负安全整数；`mentionOwner=true` 时 `owner.name` 必须是去除首尾空白后非空的字符串。
@@ -314,6 +317,7 @@ Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或
 - HTTP 业务开关调整不得关闭本期强制审批或把 dryRun 从 true 改为 false；提权及生产执行器注册必须回到本地确认。
 - 更新前必须完整校验，失败不得写文件；本机处于迁移封存/退役时不得通过改配置绕过禁写。
 - 配置写入必须采用同目录临时文件 + rename；每次校验成功的写入在同一 Store 事务中把 `configRevision.version` 单调加一，并以 `SHA256(JCS(规范化非秘密配置))` 更新 `configRevision.sha256`。各进程在派发时同时核对 version/hash 与当前配置，不能使用旧缓存绕过新禁用项；备份/迁移 manifest 同时保存这两个值和 timeZone。
+- 配置更新必须携带 `expectedRevision`（HTTP 与命令通道缺失即 `INPUT_REQUIRED`，CAS 不符即 `APPROVAL_STALE`）。实现采用"临时文件准备 → 事务内登记 `configIntent` → 原子 rename → 事务内提交 revision 与事件"的可恢复协议；启动时按 `configIntent` 与文件 hash 收尾或丢弃，崩溃不得留下"新文件 + 旧 revision"或反之。配置提交成功后通过 `ConfigService.onChange` 通知运行时刷新调度定时器、Agent/BilibiliClient 配置与维护任务。
 - 配置读取和错误响应必须递归脱敏。
 
 ### 4.6 Dry Run 与真实执行优先级
@@ -836,7 +840,7 @@ Bundle 可以引用本机管理的 ArtifactStore 而不重复复制大视频；�
 | POST | `/tasks/:id/cancel` | 提交取消请求，不保证同步取消成功 |
 | POST | `/tasks/:id/resume` | 人类显式恢复安全阶段，仍需权限、审批、unknown 检查 |
 
-- 所有非公开读取和写入需经宿主信任栅栏及主体权限检查；本机来源不等于管理员。写 API 必须通过 `connection.requestRejection` 或实施前验证过的等价机制；无法建立可信主体则 fail-closed。
+- 所有非公开读取和写入需经宿主信任栅栏及主体权限检查；本机来源不等于管理员。写 API 必须通过 `connection.requestRejection` 或实施前验证过的等价机制；无法建立可信主体则 fail-closed。实现中 `plugin.apply` 优先使用宿主注入的 `connection`/`trust` 能力建立可信上下文；宿主未提供时写 API 对缺失可信上下文的请求返回 503 `TRUST_UNAVAILABLE`。平台写、生产、发布与任务 resume 的 HTTP 请求必须显式给出 `mode`，缺失返回 `CONFIG_INVALID`；浏览缺省为 `dry`。
 - 不提供公开IM webhook、远程Worker、迁移、备份导出/灾备恢复/解冻、凭据管理、任意文件导入路由。Manual complete、Operation resolve和§27灾备管理仅受信本地人类CLI可用；模型工具与IM不得调用。status只显示脱敏的备份年龄、恢复阶段及冻结原因，不回显备份路径或事故证据内容。
 - 请求体1MB；错误含稳定 code，不含秘密。HTTP 映射如下，未列路径参数错误为400，未知路由404/`CAPABILITY_UNSUPPORTED`：
 
@@ -877,20 +881,24 @@ node cli.mjs task cancel <task-id> --confirm
 node cli.mjs task resume <task-id> --confirm --dry|--go
 node cli.mjs publish --job <json-file> --dry|--go
 node cli.mjs publish complete <task-id> --bvid <bvid> --confirm --note <note>
-node cli.mjs operation resolve <id> confirmed|not_sent --receipt <json-file> --note <note> --confirm
+node cli.mjs publish void <task-id> --reason <text> --confirm
+node cli.mjs operation resolve <id> confirmed|not_sent --receipt <json-file> [--evidence-ref <ref>] --note <note> --confirm
+node cli.mjs operation cancel <id> --reason <text> [--evidence <json-file>] --confirm
 node cli.mjs outbox resolve <outbox-id> confirmed|not_sent --receipt <json-file> --note <note> --confirm
+node cli.mjs account resume --platform bilibili --note <note> --confirm
 node cli.mjs im bind --file <binding-json> --confirm
 node cli.mjs im revoke <binding-id> --confirm
-node cli.mjs migration prepare --target <instance-id> --confirm
+node cli.mjs migration prepare --target <instance-id> [--executor-stop-evidence <text>] --confirm
 node cli.mjs migration export <migration-id> --out <directory>
 node cli.mjs migration release <migration-id> --confirm
 node cli.mjs migration import --from <directory> --data-dir <new-empty-directory>
 node cli.mjs migration validate <migration-id>
-node cli.mjs migration activate <migration-id> --receipt <file> --confirm
+node cli.mjs migration activate <migration-id> --receipt <file> --source-stopped --confirm
 node cli.mjs migration status
 node cli.mjs migration abort <migration-id> --confirm
-node cli.mjs migration disable-target <migration-id> --confirm
-node cli.mjs migration rollback <migration-id> --confirm
+node cli.mjs migration disable-target <migration-id> --target-data-dir <dir> --target-stopped --target-stop-evidence <text> --confirm
+node cli.mjs migration rollback <migration-id> --target-data-dir <dir> --to <empty-dir> --confirm
+node cli.mjs migration release-hold <hold-id> --task <task-id> --note <note> --confirm
 node cli.mjs backup policy --file <policy-json> --confirm
 node cli.mjs backup create --kind ledger|full --confirm
 node cli.mjs backup verify <backup-id>
@@ -899,6 +907,7 @@ node cli.mjs backup prune --dry
 node cli.mjs backup prune --plan <plan-id> --confirm
 node cli.mjs recovery restore --from <backup-directory> --to <new-empty-directory> --confirm
 node cli.mjs recovery inspect <recovery-id>
+node cli.mjs recovery preserve --data-dir <dir> --note <note> --confirm
 node cli.mjs recovery reconcile <recovery-id> --evidence <json-file> --confirm
 node cli.mjs recovery authorize <recovery-id> --scope <scope-id> --evidence <evidence-id> --confirm
 ```
@@ -1335,8 +1344,9 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 | BackupService.planPrune / prune | 保留策略；执行时planId＋owner确认 | 受保护引用清单与实际删除审计，不删除唯一有效点 |
 | RecoveryService.restore | backupId/source、newEmptyDir、requestId、人类上下文 | recoveryId、readonly状态、缺失对象、初始holds |
 | RecoveryService.inspect | recoveryId | 证据覆盖、未知区间、冻结scope及当前可用能力 |
-| RecoveryService.reconcile | recoveryId、evidence、expectedRevision | 仅修复可证明事实，递增case revision，不授予写权 |
-| RecoveryService.authorize | recoveryId、scope、evidenceRevision、隔离证据、人类确认 | 限定能力许可或明确拒绝，旧任务保持hold |
+| RecoveryService.reconcile | recoveryId、evidence、expectedRevision | 仅修复可证明事实，递增case revision，不授予写权；隔离证据须闭合 `uncertaintyRange` |
+| RecoveryService.authorize | recoveryId、scope、evidenceRevision、隔离证据、人类确认 | 限定能力许可或明确拒绝，旧任务保持hold；须先核验区间覆盖、永久键/额度修复证据、账号重验与新的verified恢复点 |
+| RecoveryService.preserve | dataDir、note、人类确认 | 只读复制受损/待恢复现场到 `<recoveryDir>/corrupt-<timestamp>/` 并记录hash，不修改原件 |
 
 - `FR-DR-009`：RecoveryCase至少含id、workspaceId、targetInstanceId、backupRef、parentHistory、newHistoryEpoch、revision、phase、holds、evidenceRefs、fencingEvidence、decisions、createdAt；phase为readonly/reconciling/restricted/released/blocked。released仅表示既定scope核查与许可完成，不等于所有旧任务已执行。
 - `<recoveryDir>/recovery.json` 是case状态、证据revision和授权决定的唯一权威，目标state.recovery与instance.activation/capabilities只是其投影。authorize使用两阶段持久化：①在recovery.json写入`decision.state=prepared`、nextRevision、证据/隔离引用和拟开放scope并flush；②在同一目标账本事务写入相同revision的恢复摘要和holds；③把recovery.json决定推进为committed；④最后才写instance.activationRevision/allowedCapabilities。前三步均不得开放派发；任一步崩溃可凭caseId/requestId幂等续办，但只有第④步完成且三者revision/决定完全一致才可能放行。
@@ -1348,5 +1358,5 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 
 - `FR-DR-010`：必须完成§19.5的故障注入矩阵，分别证明数据能恢复和副作用不会被误重放；记录实际恢复点年龄、只读恢复耗时、缺媒体范围和未解冻scope。仅backup create/verify成功不等于恢复演练通过。
 - 新增本地模块目标为backup-recovery.js，复用Store/Artifact/事件归档与主体权限，不新建分布式服务。以下每个入口都必须在预留和实际派发边界接入健康恢复点及RecoveryHold检查：§7.2平台写、§15.4 Manual人工补录、§15.5 External发布、§22.3通知/outbox、§24付费Provider；§24本地免费阶段与§25迁移prepare/activate还须检查迁移/恢复冻结。§6/§10只负责状态与hold约束，不能替代派发网关；同机HTTP/CLI/IM/scheduler入口不能保留绕过路径。
-- 契约与验收已写入DESIGN/SPEC，TASKS已同步T20～T22、新增10条FR-DR及账本v3的任务映射；config.example仍无独立备份策略，代码与运行接线尚未实现。必须先完成审核再实施，不以文档同步或旧版42条覆盖率证明本增补完成。
+- 契约与验收已写入DESIGN/SPEC，TASKS已同步T20～T22、新增10条FR-DR及账本v3的任务映射。2026-11-09 本工作区已按本规范完成离线实现与 P1/P2 修复：§27.8 所列派发入口均接入健康恢复点与 RecoveryHold 检查，备份索引使用跨进程文件锁+CAS，灾备解冻前置与区间闭合已实现（离线测试通过，详见 `report/P1_P2_FIX_REPORT_2026-11-09.md`）。真实独立故障域、物理介质、RPO/RTO 演练与跨 OS 验收仍未实测，不得以离线测试替代。
 
