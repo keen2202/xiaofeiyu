@@ -142,6 +142,6 @@ owner 在真实 TTY 完成 `config update` + `im bind` 后，真实数据目录�
   `self_id=user_id=275748387`，`post_type=message_sent`，文本 `Task draft: accepted`，
   会话 peer=2233843382（挽歌）。
 
-结论：**插件 → OneBot → QQ 的真实出站回信链路已打通**，回执 ID 与平台消息一致；
+owner 已在本人 QQ（2233843382）**确认收到**该条回信（2026-11-10T14:0x Z）。结论：**插件 → OneBot → QQ 的真实出站回信链路已打通**，回执 ID 与平台消息一致；
 保护/额度门禁在派发时通过了真实检查。至此 QQ 通道的入站、出站、绑定、配置均已用真实 QQ 消息验证。
 仍待 T12.1：IM 来源草稿 Task 的人工审批/拒绝与 task 状态回信闭环。
