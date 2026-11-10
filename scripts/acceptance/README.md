@@ -74,3 +74,21 @@ $cookie | node scripts/acceptance/save-credentials.mjs
 
 脚本只保留 `sessdata/bili_jct/buvid3/dedeuserid` 四个字段写入 `<dataDir>/credentials.json`，输出只含字段名与路径；
 随后在真实终端执行 `node cli.mjs account verify` 做只读 whoami 绑定。建议验收结束后轮换 Cookie。
+
+## 5. 官方 QQ 机器人（bot.q.qq.com）只读探测
+
+如果你用的是**官方 QQ 机器人**（`api.bot.qq.com`），它不是 OneBot v11，不能用 `qq-setup.mjs` 的 OneBot 流程。
+官方平台用 **AppID + ClientSecret** 换短期 `access_token`（无固定 token 环境变量）。
+
+1) 获取 AppID / ClientSecret：登录 [QQ 开放平台](https://bot.q.qq.com/open) → 你的机器人 → 开发设置/机器人密钥；
+2) 只在本机环境变量中保存（不要写进仓库/聊天）：
+```powershell
+$env:QQBOT_APP_ID = '<AppID>'
+$env:QQBOT_APP_SECRET = '<ClientSecret>'
+```
+3) 只读探测（token 交换 + `GET /users/@me` + `GET /gateway`，不发消息、不打印 token）：
+```powershell
+node scripts/acceptance/qq-official-probe.mjs
+```
+4) 输出包含机器人 id/昵称与 gateway URL；把结果发我（不含 token）后可继续评估官方机器人 transport 的实现
+（当前版本的 IM 适配器只支持 OneBot v11；官方机器人需要新增适配器并单独验收）。
