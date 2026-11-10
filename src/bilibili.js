@@ -5,6 +5,9 @@ import { md5Hex, nowIso } from './utils.js';
 export const BILI_ALLOWED_COOKIE_HOSTS = Object.freeze(['api.bilibili.com', 'api.vc.bilibili.com']);
 export const BILI_RISK_CODES = Object.freeze([-412, -352, -799, -509, -10403]);
 export const BILI_AUTH_CODES = Object.freeze([-101, -111]);
+// Business errors that reject the request outright (invalid parameters/auth scope):
+// the platform creates no effect, so a write may be settled as not_sent.
+export const BILI_REJECTED_CODES = Object.freeze([-400, -403, -404]);
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /** Retry-After may be delta-seconds or an HTTP-date (SPEC §7.4). */
@@ -381,9 +384,14 @@ export class BilibiliClient {
             details: { biliCode }
           });
         }
-        throw new AppError('BILI_API_ERROR', json.message || `Bilibili error ${json.code}`, {
-          details: { biliCode }
-        });
+        const rejected = BILI_REJECTED_CODES.includes(biliCode);
+        throw Object.assign(
+          new AppError('BILI_API_ERROR', json.message || `Bilibili error ${json.code}`, {
+            retryable: false,
+            details: { biliCode }
+          }),
+          rejected ? { notSent: true } : {}
+        );
       }
       return json;
     } catch (error) {
@@ -662,6 +670,7 @@ export class BilibiliClient {
     const deviceId = this.deviceIdProvider ? await this.deviceIdProvider() : this.deviceId;
     if (!deviceId) throw new AppError('DEPENDENCY_UNAVAILABLE', 'stable DM device id is unavailable');
     const body = new URLSearchParams();
+    body.set('msg[sender_uid]', String(operationContext.accountRef.accountId));
     body.set('msg[receiver_id]', String(recipientMid));
     body.set('msg[receiver_type]', '1');
     body.set('msg[msg_type]', '1');

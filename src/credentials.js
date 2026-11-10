@@ -1,4 +1,5 @@
 import fsp from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { AppError } from './errors.js';
 import {
   atomicWriteJson,
@@ -10,6 +11,22 @@ import {
 } from './utils.js';
 
 export const CREDENTIAL_FIELDS = Object.freeze(['sessdata', 'bili_jct', 'buvid3', 'dedeuserid']);
+
+// Bilibili's web_im send_msg expects a UUID-shaped device id (uppercase UUID v4);
+// the previous `dev_bili_<hex>` placeholder was rejected with "请求错误".
+const DEVICE_ID_PATTERN = /^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/;
+
+export function randomDeviceId() {
+  const bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex').toUpperCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function isDeviceId(value) {
+  return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
+}
 export const CREDENTIAL_ENV = Object.freeze({
   sessdata: 'BILI_SESSDATA',
   bili_jct: 'BILI_JCT',
@@ -293,7 +310,7 @@ export class CredentialService {
         mid: accountId,
         uname: profile.uname || existing?.uname || '',
         credentialRevision: revision,
-        devId: existing?.devId || `dev_${randomId('bili')}`,
+        devId: isDeviceId(existing?.devId) ? existing.devId : randomDeviceId(),
         boundAt: existing?.boundAt || nowIso(this.now),
         lastVerifiedAt: nowIso(this.now),
         verifiedFrom: 'whoami'

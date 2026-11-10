@@ -172,6 +172,8 @@ test('comment and DM writes require a context and return structured receipts', a
   // The protocol layer verifies mutual follow itself when the caller has not.
   assert.equal(fetchImpl.calls.filter((call) => call.url.includes('/relation')).length, 1);
   const dmBody = new URLSearchParams(fetchImpl.calls.find((call) => call.url.includes('/send_msg')).body);
+  assert.equal(dmBody.get('msg[sender_uid]'), '1001');
+  assert.equal(dmBody.get('msg[receiver_id]'), '2');
   assert.equal(dmBody.get('msg[dev_id]'), 'dev_1');
   await assert.rejects(
     () => client.sendComment({ aid: 1, text: 'x', operationContext: null }),

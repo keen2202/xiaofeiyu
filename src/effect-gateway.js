@@ -1,4 +1,4 @@
-import { AppError } from './errors.js';
+import { AppError, redactSecrets } from './errors.js';
 import {
   BVID_PATTERN,
   assertExecutionDispatchContext,
@@ -851,7 +851,10 @@ export class EffectGateway {
         ? {
             code: error.code || 'DEPENDENCY_UNAVAILABLE',
             message: truncateText(error.message || String(error), 500),
-            retryable: false
+            retryable: false,
+            ...(error.details && typeof error.details === 'object' && !Array.isArray(error.details)
+              ? { details: redactSecrets({ ...error.details }) }
+              : {})
           }
         : null;
       op.resultSummary = receipt
@@ -867,6 +870,19 @@ export class EffectGateway {
         kind: `operation.${outcome}`
       });
       this._settleBudget(tx, op, outcome);
+      // Explicit not_sent/failed dispatch outcomes are proven no-effect: return
+      // the reserved write quota (same rule as cancel/not_sent resolve), else a
+      // rejected request would burn the day's action quota.
+      let quotaReleased = false;
+      if (
+        ['failed', 'not_sent'].includes(outcome) &&
+        op.quota &&
+        typeof this.rateLimiter?.releaseWrite === 'function'
+      ) {
+        this.rateLimiter.releaseWrite(draft, { key: op.quota.key, action: op.quota.action || null });
+        op.quota.releasedAt = op.finishedAt;
+        quotaReleased = true;
+      }
       for (const key of op.businessKeys || [op.businessKey]) {
         const businessKey = draft.businessKeys[key];
         if (!businessKey) continue;
@@ -916,7 +932,8 @@ export class EffectGateway {
           businessKey: op.businessKey,
           receipt: op.resultSummary,
           error: op.error,
-          settlementError: op.settlementError || null
+          settlementError: op.settlementError || null,
+          quotaReleased
         }
       });
       if (context) this._contextVerifier.consume(context);

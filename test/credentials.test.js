@@ -43,6 +43,7 @@ test('same MID with a new cookie keeps quota namespace and dev id', async () => 
     await credentials.load();
     const first = await credentials.verifyAndBind({ principal: harness.owner, ownerMid: 1001 });
     const rev1 = first.account.credentialRevision;
+    assert.match(first.account.devId, /^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/);
     await saveCredentials(file, { sessdata: 'cookie2', bili_jct: 'j', dedeuserid: '1001' });
     await credentials.load();
     const second = await credentials.verifyAndBind({ principal: harness.owner, ownerMid: 1001 });

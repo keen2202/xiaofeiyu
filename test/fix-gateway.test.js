@@ -818,3 +818,30 @@ test('not_sent resolve releases reserved write quota so the daily action can ret
     await harness.cleanup();
   }
 });
+test('a not_sent dispatch failure releases quota and records platform error details', async () => {
+  const harness = await createHarness();
+  try {
+    const gateway = makeGateway(harness);
+    const task = await makeTask(harness, 'dm');
+    const quota = { key: 'bilibili:1001', action: 'dm', actionQuota: { perHour: 12, perDay: 1 } };
+    const failed = await gateway.executeOperation(
+      reservation(harness, task, { action: 'dm', receiptAction: 'dm', recoveryAction: 'dm', quota }),
+      async () => {
+        throw Object.assign(new Error('请求错误'), {
+          code: 'BILI_API_ERROR',
+          notSent: true,
+          details: { biliCode: -400 }
+        });
+      }
+    );
+    assert.equal(failed.operation.status, 'failed');
+    assert.equal(failed.operation.error.details.biliCode, -400);
+    const state = await harness.snapshot();
+    assert.equal(state.rate['bilibili:1001'].write.actions.dm.dayCount, 0);
+    assert.ok(state.operations[failed.operation.id].quota.releasedAt);
+    const event = state.events.find((entry) => entry.type === 'operation.failed');
+    assert.equal(event.payload.quotaReleased, true);
+  } finally {
+    await harness.cleanup();
+  }
+});
