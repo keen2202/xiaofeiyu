@@ -107,11 +107,13 @@
 - 新增只读 CLI `node cli.mjs im status`：输出 IM 组件状态（enabled/configured/started/transport/hostSource/capabilities）、
   当前有效绑定（sender/会话/scopes）与 inbox/outbox 计数；不发送消息、不要求人类挑战，有单测覆盖。
 - 新增引导脚本（需在真实交互终端运行，详见 `scripts/acceptance/README.md`）：
+  - `node scripts/acceptance/preflight.mjs --inputs <json>`：只读预检（OneBot 探测、凭据字段、备份保护、下一步 TTY 命令），
+    支持 `--write-template` 生成输入模板；不创建备份点、不改配置、不发消息；
   - `node scripts/acceptance/qq-setup.mjs --base-url ... --ws-url ... --owner-qq ... [--check]`：
     `im probe`（只读）→ `config update`（TTY）→ `im bind`（TTY）→ `im status`；
   - `node scripts/acceptance/real-dm.mjs --to ... --text ... --dest ... --failure-domain ... --verified-by ... [--check]`：
     `account verify` → `backup policy/create`（TTY）→ `config update`（TTY）→ 单条 `dm --go`（TTY）→ 取证；
-  - 两个脚本的 `--check` 模式已在本机验证（只校验参数/打印计划，不执行、不发消息）。
+  - 上述脚本的 `--check`/预检模式已在本机验证（只校验参数/打印计划，不执行敏感步骤、不发消息）。
 - 真实 QQ 验收仍未进行：本机没有 OneBot 桥接在监听，也没有可用的 token/机器人 QQ；保持 BLOCKED 等用户提供端点。
 - 2026-11-10 补充：已在**真实本地 DSH** 组合内用本地 OneBot stub 跑通完整链路（WS 事件 → 绑定解析 → 入站去重 →
   outbox 保护门禁 → `send_private_msg`），见 `QQ_DSH_STUB_INTEGRATION_2026-11-10.md`；stub 不等于真实 QQ，

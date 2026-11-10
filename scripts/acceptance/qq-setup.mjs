@@ -84,7 +84,7 @@ if (checkOnly) {
 }
 
 info('步骤 1/4：只读能力探测（get_status / get_login_info，不发送消息）');
-const probe = runCapture(['im', 'probe']);
+const probe = runCapture(['im', 'probe', '--config', configPatchPath]);
 console.log('[acceptance] probe:', JSON.stringify({ ok: probe.ok, status: probe.capabilities?.status, reason: probe.capabilities?.reason, bot: probe.bot }, null, 2));
 if (!probe.ok) {
   fail(`QQ 桥接不可用（${probe.capabilities?.reason || 'unknown'}）。请确认 OneBot v11 已在 ${baseUrl} 运行、WS 监听 ${wsUrl}。`);

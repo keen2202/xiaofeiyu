@@ -46,6 +46,8 @@
 > `node scripts/acceptance/real-dm.mjs --to <mid> --text "<text>" --dest <path> --failure-domain "<text>" --verified-by "<name>"`，
 > 先加 `--check` 可只校验参数并打印计划。脚本等价于下面 4.2～4.6 的命令序列，失败即停止、不自动重试。
 > QQ 接入同理使用 `node scripts/acceptance/qq-setup.mjs ...`（见 `scripts/acceptance/README.md`）。
+> 建议先跑只读预检：`node scripts/acceptance/preflight.mjs --write-template` 生成输入模板，
+> 填好后 `node scripts/acceptance/preflight.mjs --inputs <file>` 校验端点/凭据/保护状态并打印下一步命令。
 > 运行位置：本机原始终端（Windows Terminal / PowerShell 窗口），仓库目录 `D:\Workespace\xiaofeiyu`。
 > 每个 `--confirm` 命令会展示绑定摘要并要求输入一次性挑战短语；请不要把挑战短语交给任何自动化进程代答。
 

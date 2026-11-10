@@ -485,7 +485,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **依赖**：T11、T03、T09；另需用户明确授权账号、内容、动作、额度和发布器执行范围。
 
-**目标文件**：`test/manual/bilibili.acceptance.mjs`、`test/manual/publisher.acceptance.mjs`、`scripts/acceptance/real-dm.mjs`（owner 在真实 TTY 中运行的引导脚本）。
+**目标文件**：`test/manual/bilibili.acceptance.mjs`、`test/manual/publisher.acceptance.mjs`、`scripts/acceptance/preflight.mjs`、`scripts/acceptance/real-dm.mjs`（owner 在真实 TTY 中运行的引导脚本）。
 
 **工作**：config validate→显式account verify/whoami→只读Browse→评论/审批/白名单DM干跑→Manual Bundle。真实平台写入前还须建立owner核验的独立有效恢复点并确认无匹配RecoveryHold；缺保护条件不得用测试配置或go绕过。真实评论/DM、External投稿逐动作再授权，一次一条最低额度，记录备份cut与操作回执，不批量外发。
 

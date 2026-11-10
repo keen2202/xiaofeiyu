@@ -4,6 +4,17 @@
 **它们不会绕过任何人工程序**：所有 `--confirm` 步骤都由你本人在同一终端回答挑战短语；
 脚本失败即停止，不自动重试真实写入。
 
+## 0. 只读预检（推荐先跑，任何终端）
+
+```powershell
+node scripts/acceptance/preflight.mjs --write-template   # 生成 .dsh-probe/acceptance/inputs.template.json
+# 填写模板里的端点/QQ/mid/备份参数（token 只放环境变量，不写进文件）后：
+node scripts/acceptance/preflight.mjs --inputs .dsh-probe/acceptance/inputs.template.json
+```
+
+预检只读：探测 OneBot 桥接（get_status/get_login_info）、检查凭据文件字段（不读取值）、读取备份保护状态，
+并输出下一步要执行的 TTY 命令；有问题时非 0 退出并列出原因。也可直接用命令行参数指定（见 `--help`）。
+
 ## 1. QQ / OneBot 接入引导
 
 前置：你已在本地运行 OneBot v11 实现（NapCat/Lagrange 等），HTTP 与正向 WS 端口可访问；
