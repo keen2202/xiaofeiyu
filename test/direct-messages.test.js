@@ -47,6 +47,9 @@ test('whitelisted mutual DM sends once and records only a summary', async () => 
     assert.equal(result.task.status, 'succeeded');
     assert.equal(adapter.calls.sendDirectMessage.length, 1);
     assert.equal(adapter.calls.checkRecipient.length, 1);
+    // Preflight relation evidence is passed into the dispatch so the adapter
+    // does not issue a second (rate-limited) relation read.
+    assert.equal(adapter.calls.sendDirectMessage[0].mutualVerified, true);
     const state = await harness.snapshot();
     const event = state.events.find((entry) => entry.type === 'dm.task.created');
     assert.equal(event.payload.text, undefined);

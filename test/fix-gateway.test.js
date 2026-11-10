@@ -770,3 +770,51 @@ test('mock X/Douyin/remote doubles are contract-only and never become enabled ad
   invalid.platforms = { enabled: ['x'] };
   assert.throws(() => validateConfig(invalid), (error) => error.code === 'CONFIG_INVALID');
 });
+
+test('not_sent resolve releases reserved write quota so the daily action can retry', async () => {
+  const harness = await createHarness();
+  try {
+    const gateway = makeGateway(harness);
+    const task = await makeTask(harness, 'dm');
+    const quota = { key: 'bilibili:1001', action: 'dm', actionQuota: { perHour: 12, perDay: 1 } };
+    const unknown = await gateway.executeOperation(
+      reservation(harness, task, { action: 'dm', receiptAction: 'dm', recoveryAction: 'dm', quota }),
+      async () => {
+        throw new Error('read time slot is not available yet');
+      }
+    );
+    assert.equal(unknown.operation.status, 'unknown');
+    let state = await harness.snapshot();
+    assert.equal(state.rate['bilibili:1001'].write.actions.dm.dayCount, 1);
+    const resolved = await gateway.resolve(
+      {
+        operationId: unknown.operation.id,
+        decision: 'not_sent',
+        note: 'local read-slot guard rejected before the platform request',
+        evidenceRef: 'evidence:local:read-slot-guard'
+      },
+      harness.humanContext
+    );
+    assert.equal(resolved.operation.status, 'not_sent');
+    state = await harness.snapshot();
+    assert.equal(state.rate['bilibili:1001'].write.actions.dm.dayCount, 0);
+    assert.ok(state.operations[unknown.operation.id].quota.releasedAt);
+    const resolveEvent = state.events.find((entry) => entry.type === 'operation.not_sent');
+    assert.equal(resolveEvent.payload.quotaReleased, true);
+    // The release must make a legitimate retry possible once the write gap passed.
+    harness.now.advance(121000);
+    const retried = await gateway.executeOperation(
+      reservation(harness, task, {
+        action: 'dm',
+        receiptAction: 'dm',
+        recoveryAction: 'dm',
+        quota,
+        businessKey: 'dm:retry-after-not-sent'
+      }),
+      async () => receipt('dm')
+    );
+    assert.equal(retried.operation.status, 'confirmed');
+  } finally {
+    await harness.cleanup();
+  }
+});

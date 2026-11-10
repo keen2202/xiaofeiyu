@@ -228,14 +228,18 @@ export class BilibiliPlatformAdapter {
     if (String(recipientMid) === account.accountRef.accountId) {
       throw new AppError('FORBIDDEN', 'cannot direct-message yourself');
     }
+    let mutualVerified = false;
     if (requireMutual) {
       const relation = await this.client.relation(recipientMid);
       if (!relation.mutual) throw new AppError('MUTUAL_FOLLOW_REQUIRED', 'recipient is not a mutual follow');
+      mutualVerified = true;
     }
-    return { allowed: true };
+    // Preflight evidence lets the dispatch skip a second relation read that
+    // would hit the read time-slot gap (two reads back-to-back are rate-limited).
+    return { allowed: true, mutualVerified };
   }
 
-  async sendDirectMessage({ recipientMid, text, operationContext, requireMutual = true }) {
+  async sendDirectMessage({ recipientMid, text, operationContext, requireMutual = true, mutualVerified = false }) {
     this._assertPlatformEnabled();
     const account = await this._activeAccount();
     if (String(operationContext?.accountRef?.accountId) !== account.accountRef.accountId) {
@@ -244,20 +248,20 @@ export class BilibiliPlatformAdapter {
     if (String(recipientMid) === account.accountRef.accountId) {
       throw new AppError('FORBIDDEN', 'cannot direct-message yourself');
     }
-    let mutualVerified = false;
-    if (requireMutual) {
+    let relationVerified = mutualVerified === true;
+    if (requireMutual && !relationVerified) {
       const relation = await this.client.relation(recipientMid);
       if (!relation.mutual) throw new AppError('MUTUAL_FOLLOW_REQUIRED', 'recipient is not a mutual follow');
-      mutualVerified = true;
+      relationVerified = true;
     }
     // The protocol client re-checks mutual follow unless this adapter proves it
-    // already verified the relation in this dispatch.
+    // already verified the relation (fresh preflight evidence or this dispatch).
     return this.client.sendDirectMessage({
       recipientMid,
       text,
       operationContext,
       requireMutual,
-      mutualVerified
+      mutualVerified: relationVerified
     });
   }
 

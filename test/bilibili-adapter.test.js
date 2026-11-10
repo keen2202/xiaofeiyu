@@ -224,3 +224,44 @@ test('adapter verifies mutual follow once and passes mutualVerified to the clien
     await harness.cleanup();
   }
 });
+
+test('preflight mutualVerified evidence skips the dispatch relation read', async () => {
+  const harness = await createHarness();
+  try {
+    await bindMockAccount(harness);
+    const calls = { relation: [], sent: [] };
+    const client = {
+      async relation(mid) {
+        calls.relation.push(mid);
+        return { mutual: true, attribute: 6 };
+      },
+      async sendDirectMessage(args) {
+        calls.sent.push(args);
+        return { externalId: 'msg_preflight' };
+      }
+    };
+    const adapter = new BilibiliPlatformAdapter({
+      client,
+      store: harness.store,
+      configService: harness.configService,
+      rateLimiter: harness.rateLimiter,
+      now: harness.now
+    });
+    const preflight = await adapter.checkRecipient({ recipientMid: 2002, requireMutual: true });
+    assert.deepEqual(preflight, { allowed: true, mutualVerified: true });
+    assert.deepEqual(calls.relation, [2002]);
+    await adapter.sendDirectMessage({
+      recipientMid: 2002,
+      text: 'hi',
+      operationContext: { accountRef: { platform: 'bilibili', accountId: '1001' } },
+      requireMutual: true,
+      mutualVerified: preflight.mutualVerified
+    });
+    assert.deepEqual(calls.relation, [2002]);
+    assert.equal(calls.sent.length, 1);
+    assert.equal(calls.sent[0].mutualVerified, true);
+    assert.equal(calls.sent[0].requireMutual, true);
+  } finally {
+    await harness.cleanup();
+  }
+});

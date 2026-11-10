@@ -92,8 +92,9 @@ export class DirectMessagesModule {
     const effective = effectiveDryRun({ config, feature: 'dm', invocationMode: mode });
     // Whitelist/self checks happen before any network call. Mutual-follow is a
     // read-only preflight for real attempts; the adapter repeats it at dispatch.
+    let preflight = null;
     if (!effective.dryRun) {
-      await this.adapter.checkRecipient({
+      preflight = await this.adapter.checkRecipient({
         recipientMid: recipient,
         requireMutual: config.directMessages.requireMutual
       });
@@ -273,7 +274,11 @@ export class DirectMessagesModule {
           recipientMid: recipient,
           text: message,
           operationContext,
-          requireMutual: config.directMessages.requireMutual
+          requireMutual: config.directMessages.requireMutual,
+          // The preflight read ran seconds ago in this same logical attempt; the
+          // dispatch must not issue a second relation read (it would be blocked
+          // by the read time-slot gap and leave an ambiguous operation).
+          mutualVerified: preflight?.mutualVerified === true
         }),
       {
         applyResult: async (tx, operation, status) => {

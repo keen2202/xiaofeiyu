@@ -209,10 +209,10 @@ export function makeMockAdapter({ candidates = [], readSubtitle = '这是一个�
     },
     async checkRecipient(args) {
       calls.checkRecipient.push(args);
-      return { allowed: true };
+      return { allowed: true, mutualVerified: args?.requireMutual !== false };
     },
-    async sendDirectMessage({ recipientMid, text, operationContext }) {
-      calls.sendDirectMessage.push({ recipientMid, text, operationContext });
+    async sendDirectMessage({ recipientMid, text, operationContext, requireMutual, mutualVerified }) {
+      calls.sendDirectMessage.push({ recipientMid, text, operationContext, requireMutual, mutualVerified });
       return {
         platform: 'bilibili',
         accountId: operationContext.accountRef.accountId,

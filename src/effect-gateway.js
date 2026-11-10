@@ -1253,6 +1253,16 @@ export class EffectGateway {
         verification: decision === 'confirmed' ? receipt.verification : 'manual_assertion'
       };
       current.receipt = receipt ? deepClone(receipt) : current.receipt;
+      // A not_sent resolution is the human-attested "no platform effect"
+      // verdict: the write quota reserved for this operation must be returned,
+      // otherwise a proven non-send would burn the daily action quota and make
+      // a legitimate retry impossible (same rule as the cancel path).
+      let quotaReleased = false;
+      if (decision === 'not_sent' && current.quota && typeof this.rateLimiter?.releaseWrite === 'function') {
+        this.rateLimiter.releaseWrite(draft, { key: current.quota.key, action: current.quota.action || null });
+        current.quota.releasedAt = current.resolvedAt;
+        quotaReleased = true;
+      }
       if (decision === 'confirmed') {
         current.confirmedAt = current.resolvedAt;
         current.resultSummary = {
@@ -1328,7 +1338,8 @@ export class EffectGateway {
           businessKey: current.businessKey,
           receipt: current.resultSummary || null,
           note: truncateText(note || '', 500),
-          evidenceRef: evidenceRef || null
+          evidenceRef: evidenceRef || null,
+          quotaReleased
         }
       });
       return { operation: deepClone(current), deduplicated: false };
