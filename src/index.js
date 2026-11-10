@@ -90,6 +90,7 @@ export async function createRuntime(options = {}) {
     env = process.env,
     now = () => new Date(),
     fetchImpl = globalThis.fetch,
+    webSocketImpl = undefined,
     humanVerifier = null,
     imHost = null,
     logger = console,
@@ -434,8 +435,26 @@ export async function createRuntime(options = {}) {
     try {
       if (!imHostResolved && config.im.transport === 'onebot-v11' && config.im.onebot?.baseUrl) {
         const { createOneBotQqHost } = await import('./adapters/channels/onebot-qq.js');
-        imHostResolved = createOneBotQqHost({ config, env, logger, fetchImpl, now });
+        imHostResolved = createOneBotQqHost({
+          config,
+          env,
+          logger,
+          fetchImpl,
+          ...(webSocketImpl ? { WebSocketImpl: webSocketImpl } : {}),
+          now
+        });
         if (imHostResolved) imHostSource = 'onebot-v11';
+      } else if (!imHostResolved && config.im.transport === 'qq-official') {
+        const { createQQOfficialHost } = await import('./adapters/channels/qq-official.js');
+        imHostResolved = createQQOfficialHost({
+          config,
+          env,
+          logger,
+          fetchImpl,
+          ...(webSocketImpl ? { WebSocketImpl: webSocketImpl } : {}),
+          now
+        });
+        if (imHostResolved) imHostSource = 'qq-official';
       }
       const { DshImChannelAdapter, ImBridge } = await import('./adapters/channels/dsh-im.js');
       imAdapter = new DshImChannelAdapter({ host: imHostResolved, config, now, logger });

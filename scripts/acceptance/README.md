@@ -90,5 +90,15 @@ $env:QQBOT_APP_SECRET = '<ClientSecret>'
 ```powershell
 node scripts/acceptance/qq-official-probe.mjs
 ```
-4) 输出包含机器人 id/昵称与 gateway URL；把结果发我（不含 token）后可继续评估官方机器人 transport 的实现
-（当前版本的 IM 适配器只支持 OneBot v11；官方机器人需要新增适配器并单独验收）。
+4) 输出包含机器人 id/昵称与 gateway URL；把结果发我（不含 token）。
+5) 当前已实现官方机器人 transport（`im.transport=qq-official`），拿到 AppID/ClientSecret 后按下面顺序继续：
+```powershell
+# 配置 transport=qq-official（config update 需要 TTY 人类挑战）
+node cli.mjs config update --file <qq-official-config-patch.json> --confirm
+# 只读监听入站消息，捕获 owner openid（不会执行命令/发消息）
+node cli.mjs im listen --seconds 120
+# 用捕获到的 openid 绑定 owner（TTY 人类挑战）
+node cli.mjs im bind --file <binding.json> --confirm
+node cli.mjs im status --probe
+```
+细节与 binding.json/config 示例见 doc/report/QQ_OFFICIAL_TRANSPORT_2026-11-10.md。

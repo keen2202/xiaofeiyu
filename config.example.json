@@ -70,6 +70,15 @@
       "accessTokenEnv": "ONEBOT_ACCESS_TOKEN",
       "timeoutMs": 10000,
       "reconnectMs": 5000
+    },
+    "qqOfficial": {
+      "apiBase": "https://api.bot.qq.com",
+      "appIdEnv": "QQBOT_APP_ID",
+      "appSecretEnv": "QQBOT_APP_SECRET",
+      "websocketUrl": "",
+      "intents": 33554432,
+      "timeoutMs": 10000,
+      "reconnectMs": 5000
     }
   },
   "artifacts": {

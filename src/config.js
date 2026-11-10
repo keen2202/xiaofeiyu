@@ -99,10 +99,12 @@ const NESTED_KEYS = {
     'approvalTtlSec',
     'groupReplies',
     'notifications',
-    'onebot'
+    'onebot',
+    'qqOfficial'
   ]),
   'im.notifications': new Set(['enabled', 'minGapMs', 'perMinute']),
   'im.onebot': new Set(['baseUrl', 'websocketUrl', 'accessTokenEnv', 'timeoutMs', 'reconnectMs']),
+  'im.qqOfficial': new Set(['apiBase', 'appIdEnv', 'appSecretEnv', 'websocketUrl', 'intents', 'timeoutMs', 'reconnectMs']),
   artifacts: new Set(['directory', 'maxImportBytes']),
   production: new Set([
     'enabled',
@@ -357,7 +359,7 @@ export function validateConfig(input) {
   requireAbsoluteOrEmpty(input.diary.directory, 'diary.directory');
 
   requireEnum(input.im.adapterId, 'im.adapterId', ['dsh-im']);
-  requireEnum(input.im.transport, 'im.transport', ['dsh-im', 'onebot-v11']);
+  requireEnum(input.im.transport, 'im.transport', ['dsh-im', 'onebot-v11', 'qq-official']);
   requireInteger(input.im.maxMessageAgeSec, 'im.maxMessageAgeSec', 60, 3600);
   requireInteger(input.im.approvalTtlSec, 'im.approvalTtlSec', 60, 3600);
   requireEnum(input.im.groupReplies, 'im.groupReplies', ['summary', 'none']);
@@ -389,6 +391,28 @@ export function validateConfig(input) {
       });
     }
   }
+
+  // Optional OFFICIAL QQ bot transport (bot.q.qq.com): AppID + ClientSecret are
+  // read from environment variables (never stored in config) and exchanged for
+  // a short-lived access_token. This is a separate protocol from OneBot v11.
+  const qqOfficial = input.im.qqOfficial;
+  requireHttpsOrEmpty(qqOfficial.apiBase, 'im.qqOfficial.apiBase', ['https:']);
+  requireHttpsOrEmpty(qqOfficial.websocketUrl, 'im.qqOfficial.websocketUrl', ['ws:', 'wss:']);
+  for (const key of ['appIdEnv', 'appSecretEnv']) {
+    if (typeof qqOfficial[key] !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(qqOfficial[key])) {
+      throw new AppError('CONFIG_INVALID', `im.qqOfficial.${key} must be an environment variable name`, {
+        details: { path: `im.qqOfficial.${key}` }
+      });
+    }
+  }
+  if (qqOfficial.apiBase === '') {
+    throw new AppError('CONFIG_INVALID', 'im.qqOfficial.apiBase must not be empty', {
+      details: { path: 'im.qqOfficial.apiBase' }
+    });
+  }
+  requireInteger(qqOfficial.intents, 'im.qqOfficial.intents', 0, 0x7fffffff, { allowZero: true });
+  requireInteger(qqOfficial.timeoutMs, 'im.qqOfficial.timeoutMs', 1000, 60000);
+  requireInteger(qqOfficial.reconnectMs, 'im.qqOfficial.reconnectMs', 1000, 600000);
 
   requireAbsoluteOrEmpty(input.artifacts.directory, 'artifacts.directory');
   requireInteger(input.artifacts.maxImportBytes, 'artifacts.maxImportBytes', 1, Number.MAX_SAFE_INTEGER);

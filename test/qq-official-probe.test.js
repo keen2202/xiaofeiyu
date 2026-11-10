@@ -62,7 +62,7 @@ test('token business errors surface the code and hint without echoing secrets', 
   ]);
   await assert.rejects(
     () => fetchAppAccessToken({ appId: 'A', clientSecret: 'S', fetchImpl }),
-    (error) => error.name === 'QQOfficialProbeError'
+    (error) => error.name === 'QQOfficialApiError'
       && error.code === 100016
       && /ClientSecret/.test(error.hint || '')
       && !error.message.includes('S')

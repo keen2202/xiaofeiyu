@@ -291,6 +291,7 @@ D-01～D-18 保留原架构方向；D-19～D-20 是本次获准写入的灾备�
 - **原因**：复用可信宿主身份/通道，避免自研聊天 SDK 与重复权限体系。
 - **影响**：只读能力探测后启用一个可选 `dsh-im` 桥接；不支持标记 `BLOCKED`，不可验证人类身份则审批 fail-closed。模型没有人工批准资格，通知只消费 outbox。
 - **可选宿主实现（2026-11-09 经用户授权补充）**：当宿主未提供 `dsh-im` 通道时，允许把用户自行部署的 OneBot v11 桥接作为 `dsh-im` 宿主的实现之一（插件只做 OneBot 协议的薄客户端，不捆绑 QQ/微信 SDK）。该实现不改变本节与 SPEC §22 的身份、审批、outbox 与幂等语义：首版仅消费私聊、sender 必须有本地 `im.bind` 绑定、人类证明保持 `unverified` 因而 IM 审批 fail-closed、无发送幂等/送达查询时未知结果不重投。见 `report/QQ_ONEBOT_INTEGRATION_2026-11-09.md`。
+- **官方 QQ 机器人 transport（2026-11-10 经用户提供端点后补充）**：另提供 `im.transport=qq-official` 的可选实现，直接对 QQ 官方机器人开放平台（`bot.q.qq.com` / `api.bot.qq.com`）做薄 API 客户端：AppID/ClientSecret 只从环境变量读取并换短期 token，事件走官方 gateway WS，单聊按 `user_openid` 寻址、用 `msg_id/msg_seq` 被动回复。同样不改变身份/审批/outbox 语义：人类证明 `unverified`、IM 审批 fail-closed、仅私聊、sender 必须命中本地绑定、无送达查询且未知结果不重投。见 `report/QQ_OFFICIAL_TRANSPORT_2026-11-10.md`。
 
 ### D-16：停机单写者迁移
 
