@@ -74,7 +74,7 @@ function grepMarket(dir, depth) {
     try { text = fs.readFileSync(full, 'utf8'); } catch { continue; }
     const lines = text.split(/\r?\n/);
     lines.forEach((line, index) => {
-      if (/\bqq\b|qq\.com|tencent|qqbot|onebot|napcat|lagrange/i.test(line)) {
+      if (/\bqq\b|qq\.com|tencent|onebot|napcat|lagrange/i.test(line)) {
         matches.push({ file: full.replace(ASAR + '/', ''), line: index + 1, text: line.trim().slice(0, 300) });
       }
     });

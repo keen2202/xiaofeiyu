@@ -444,17 +444,6 @@ export async function createRuntime(options = {}) {
           now
         });
         if (imHostResolved) imHostSource = 'onebot-v11';
-      } else if (!imHostResolved && config.im.transport === 'qq-official') {
-        const { createQQOfficialHost } = await import('./adapters/channels/qq-official.js');
-        imHostResolved = createQQOfficialHost({
-          config,
-          env,
-          logger,
-          fetchImpl,
-          ...(webSocketImpl ? { WebSocketImpl: webSocketImpl } : {}),
-          now
-        });
-        if (imHostResolved) imHostSource = 'qq-official';
       }
       const { DshImChannelAdapter, ImBridge } = await import('./adapters/channels/dsh-im.js');
       imAdapter = new DshImChannelAdapter({ host: imHostResolved, config, now, logger });

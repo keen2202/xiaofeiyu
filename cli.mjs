@@ -313,16 +313,13 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     if (transport === 'onebot-v11') {
       const { createOneBotQqHost } = await import('./src/adapters/channels/onebot-qq.js');
       host = createOneBotQqHost({ config, env: process.env, logger: silentLogger });
-    } else if (transport === 'qq-official') {
-      const { createQQOfficialHost } = await import('./src/adapters/channels/qq-official.js');
-      host = createQQOfficialHost({ config, env: process.env, logger: silentLogger });
     }
     if (!host) {
       print(stdout, {
         ok: false,
         probed: false,
         transport,
-        reason: `${transport} is not configured (check im.onebot.* or im.qqOfficial.* settings)`
+        reason: `${transport} is not configured (check im.onebot.* settings)`
       });
       return 1;
     }
@@ -331,22 +328,13 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       const bot = host.loginInfo || host.botIdentity || capabilities.bot || null;
       let bindingHint = null;
       if (bot?.botAccountId) {
-        bindingHint = transport === 'onebot-v11'
-          ? {
-              adapterId: 'dsh-im',
-              botAccountId: bot.botAccountId,
-              senderRef: '<owner QQ number>',
-              conversationIds: ['private:<owner QQ number>'],
-              scopes: ['task.read.own', 'task.cancel.own', 'production.create']
-            }
-          : {
-              adapterId: 'dsh-im',
-              botAccountId: bot.botAccountId,
-              senderRef: '<owner user_openid>',
-              conversationIds: ['private:<owner user_openid>'],
-              scopes: ['task.read.own', 'task.cancel.own', 'production.create'],
-              note: '官方机器人按 openid 寻址：先让 owner 给机器人发一条消息，再运行 im listen 捕获 openid'
-            };
+        bindingHint = {
+          adapterId: 'dsh-im',
+          botAccountId: bot.botAccountId,
+          senderRef: '<owner QQ number>',
+          conversationIds: ['private:<owner QQ number>'],
+          scopes: ['task.read.own', 'task.cancel.own', 'production.create']
+        };
       }
       print(stdout, {
         ok: capabilities.status === 'available',
@@ -479,8 +467,8 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     }
     // Read-only IM inspection: adapter/bridge capability state, local bindings
     // and inbox/outbox counters. No message is sent and no human proof is asked.
-    // `--probe` additionally performs the read-only transport probe (OneBot
-    // get_status/get_login_info, or the official QQ bot token/identity/gateway).
+    // `--probe` additionally performs the read-only OneBot v11 probe
+    // (get_status/get_login_info).
     if (command[0] === 'im' && command[1] === 'status') {
       const status = await runtime.status(principal);
       let liveProbe = null;
@@ -490,10 +478,6 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         if (current.im?.transport === 'onebot-v11' && current.im.onebot?.baseUrl) {
           const { createOneBotQqHost } = await import('./src/adapters/channels/onebot-qq.js');
           const host = createOneBotQqHost({ config: current, env: process.env, logger: silentLogger });
-          if (host) liveProbe = await host.describeCapabilities();
-        } else if (current.im?.transport === 'qq-official') {
-          const { createQQOfficialHost } = await import('./src/adapters/channels/qq-official.js');
-          const host = createQQOfficialHost({ config: current, env: process.env, logger: silentLogger });
           if (host) liveProbe = await host.describeCapabilities();
         } else {
           liveProbe = { status: 'unavailable', reason: `${current.im?.transport || 'dsh-im'} is not configured` };

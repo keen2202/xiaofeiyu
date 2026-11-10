@@ -81,7 +81,6 @@ dsh-bili-unified/
       platforms/bilibili.js
       channels/dsh-im.js
       channels/onebot-qq.js
-      channels/qq-official.js
       execution/local.js
     modules/
       browse.js
@@ -1150,7 +1149,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - `FR-IM-006`：群聊只发summary或不发，不带完整脚本、私人日记、绝对路径、凭据或未经授权附件。首版产物回信仅含artifactId和摘要；不自行搭建公开下载链接服务。
 - `FR-IM-007`：dsh-im只有在已验证宿主消息来源、发送方式、事件ID、生命周期及人类证明后启用相应能力。未验证时报告unavailable/BLOCKED，不另接未经授权的QQ微信SDK。
 - **可选宿主实现（用户提供，2026-11-09 授权补充）**：`dsh-im` 的宿主实现可以是操作者自行部署的标准 OneBot v11 桥接（HTTP action API + forward WebSocket），插件只做薄客户端，不捆绑 QQ/微信 SDK，也不新增第二套 IM 子系统。该实现必须保持本章全部语义：入站 sender 只能经本地 `im.bind` 绑定推导 principal；人类证明无法由 OneBot 提供，故 `humanAssurance=unverified`，IM 审批保持 fail-closed；首版只消费私聊、不接群；OneBot 无发送幂等键与送达查询，`delivery.query/idempotent=false`，超时或不可解析的发送结果保持 unknown 且不自动重投。端点与 token 只在本地配置/环境变量中提供，不进入 HTTP 配置 PATCH、迁移包或报告。
-- **官方 QQ 机器人 transport（2026-11-10 授权补充）**：`im.transport=qq-official` 时，插件作为 QQ 官方机器人开放平台（bot.q.qq.com）的薄 API 客户端：AppID/ClientSecret 仅从环境变量读取并换短期 access_token（`POST /app/getAppAccessToken`），API 头 `Authorization: QQBot <token>`；事件经 `GET /gateway` 的 WS（op10/op2/op1）接收，单聊按 `user_openid` 寻址并用 `msg_id/msg_seq` 被动回复。语义不变：人类证明 `unverified`、IM 审批 fail-closed、仅私聊 sender 必须命中本地绑定、无送达查询时 `delivery.query/idempotent=false` 且未知不重投；AppID/ClientSecret 不进配置/状态/迁移包/报告。见 `report/QQ_OFFICIAL_TRANSPORT_2026-11-10.md`。
+- **官方 QQ 机器人端点不单独适配（2026-11-10 决定）**：曾按用户提供的 `api.bot.qq.com` 端点短暂实现过 `im.transport=qq-official`，随后按"删除官方 transport、保持轻量化"决定整体移除；现只有 `dsh-im` 与 `onebot-v11` 两种 transport，官方平台端点必须经 OneBot v11 桥接（如 NapCat）转换，不得直连。
 - `FR-IM-008`：MockChannel只能证明契约行为；真实IM交付至少验证一次授权消息→草稿Task→人类审批/拒绝→状态回信。真实消息发送需单独用户授权；无条件时交付报告必须列未实测/阻塞，不静默标完成。
 
 ## 23. ArtifactStore 契约

@@ -1,6 +1,6 @@
 # 真实接入验收脚本（需在真实交互终端中运行）
 
-本目录两个脚本把"人工逐步敲命令 + 逐条回答一次性 TTY 挑战"收敛成引导式流程。
+本目录的验收脚本把"人工逐步敲命令 + 逐条回答一次性 TTY 挑战"收敛成引导式流程。
 **它们不会绕过任何人工程序**：所有 `--confirm` 步骤都由你本人在同一终端回答挑战短语；
 脚本失败即停止，不自动重试真实写入。
 
@@ -75,30 +75,3 @@ $cookie | node scripts/acceptance/save-credentials.mjs
 脚本只保留 `sessdata/bili_jct/buvid3/dedeuserid` 四个字段写入 `<dataDir>/credentials.json`，输出只含字段名与路径；
 随后在真实终端执行 `node cli.mjs account verify` 做只读 whoami 绑定。建议验收结束后轮换 Cookie。
 
-## 5. 官方 QQ 机器人（bot.q.qq.com）只读探测
-
-如果你用的是**官方 QQ 机器人**（`api.bot.qq.com`），它不是 OneBot v11，不能用 `qq-setup.mjs` 的 OneBot 流程。
-官方平台用 **AppID + ClientSecret** 换短期 `access_token`（无固定 token 环境变量）。
-
-1) 获取 AppID / ClientSecret：登录 [QQ 开放平台](https://bot.q.qq.com/open) → 你的机器人 → 开发设置/机器人密钥；
-2) 只在本机环境变量中保存（不要写进仓库/聊天）：
-```powershell
-$env:QQBOT_APP_ID = '<AppID>'
-$env:QQBOT_APP_SECRET = '<ClientSecret>'
-```
-3) 只读探测（token 交换 + `GET /users/@me` + `GET /gateway`，不发消息、不打印 token）：
-```powershell
-node scripts/acceptance/qq-official-probe.mjs
-```
-4) 输出包含机器人 id/昵称与 gateway URL；把结果发我（不含 token）。
-5) 当前已实现官方机器人 transport（`im.transport=qq-official`），拿到 AppID/ClientSecret 后按下面顺序继续：
-```powershell
-# 配置 transport=qq-official（config update 需要 TTY 人类挑战）
-node cli.mjs config update --file <qq-official-config-patch.json> --confirm
-# 只读监听入站消息，捕获 owner openid（不会执行命令/发消息）
-node cli.mjs im listen --seconds 120
-# 用捕获到的 openid 绑定 owner（TTY 人类挑战）
-node cli.mjs im bind --file <binding.json> --confirm
-node cli.mjs im status --probe
-```
-细节与 binding.json/config 示例见 doc/report/QQ_OFFICIAL_TRANSPORT_2026-11-10.md。

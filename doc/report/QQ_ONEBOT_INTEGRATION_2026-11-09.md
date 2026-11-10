@@ -120,24 +120,17 @@
   T16.2 仍 BLOCKED，等待真实端点后替换配置即可复用同一流程。
 - 2026-11-10 端点核对：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 经只读探测
   返回官方 QQ 机器人错误体 `{"message":"不支持的调用","code":11001,"err_code":40011002}`，**不是 OneBot v11 协议**；
-  当前适配器无法直连官方 QQ 机器人 API。需要用户改供 OneBot v11 桥接（NapCat/Lagrange 等）端点，
-  或另行授权实现官方 QQ 机器人适配（需要 AppID/AppSecret，且官方 C2C 消息按 openid 寻址、仅能回复已与机器人交互的用户）。
+  该端点属于官方 QQ 机器人开放平台（AppID/ClientSecret 换 token、事件按 openid 寻址），插件不直连。
+  曾短暂实现过 `im.transport=qq-official`，**已按用户 2026-11-10 决定整体删除**（保持轻量化）；
+  现在只保留 OneBot v11 桥接路线，官方平台端点需先经 NapCat/Lagrange 等桥接转换。
 
-## 8. 官方 QQ 机器人端点核对（2026-11-10，用户提供）
+## 8. 官方 QQ 机器人端点核对（2026-11-10，用户提供，结论已归档）
 
 用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 属于**官方 QQ 机器人开放平台**，
-不是 OneBot v11：
+不是 OneBot v11：只读探测无 token 时 `GET /`、`POST /get_status`、`POST /get_login_info` 均返回
+`{"message":"不支持的调用","code":11001,"err_code":40011002}`。按其协议需要 AppID + ClientSecret 换短期
+`access_token`（`POST /app/getAppAccessToken`），WS 走 `/gateway`，C2C 按 `user_openid` 寻址并只能被动回复。
 
-- 只读探测（无 token）：`GET /`、`POST /get_status`、`POST /get_login_info` 均返回
-  `{"message":"不支持的调用","code":11001,"err_code":40011002}`，说明现有 OneBot 适配器不能直连；
-- 官方鉴权：`POST https://api.bot.qq.com/app/getAppAccessToken`（body `{appId, clientSecret}`）→
-  `{access_token, expires_in≈7200}`；业务错误 HTTP 仍为 200，用 body.code 判断；
-- 调用 API 时请求头 `Authorization: QQBot <access_token>`；
-- WS：`GET /gateway` 拿 `wss://api.bot.qq.com/websocket/`，op10 Hello 后发 op2 Identify
-  （`token: "QQBot <access_token>"`, `intents: 1<<25`），op1 心跳；C2C 事件 `C2C_MESSAGE_CREATE`，
-  按 `author.user_openid` 寻址，回复用 `POST /v2/users/{user_openid}/messages` 并带 `msg_id/msg_seq`（被动回复）。
-- 新增只读探测脚本 `scripts/acceptance/qq-official-probe.mjs`：用 `QQBOT_APP_ID`/`QQBOT_APP_SECRET`
-  环境变量换 token、读取机器人身份与 gateway URL，不打印 token/secret，不发送消息；配 4 项单测。
+按用户 2026-11-10 决定，官方机器人 transport 已整体删除（代码、测试、探测脚本、配置与设计章节一并移除），
+本仓库只保留 `dsh-im` 与 OneBot v11 两种 transport，以保持实现轻量；真实 QQ 接入改走 OneBot v11 桥接（NapCat）。
 
-结论：若选官方机器人，需要先提供 AppID/ClientSecret（环境变量），并授权新增 `qq-official` transport
-（当前实现只有 OneBot v11）；否则改用 OneBot v11 桥接（NapCat/Lagrange）端点即可走现有流程。

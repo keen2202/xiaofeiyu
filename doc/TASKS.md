@@ -267,7 +267,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **实现状态（2026-11-10，真实 DSH 内 stub 联调）**：在真实 DSH 0.2.2-rc.1 组合内用本地 OneBot stub 跑通"插件启动→WS 连接→私聊事件→绑定解析→入站去重→outbox 保护门禁→OneBot HTTP 发送"全链路（`/status` 的 IM 组件 available、重复事件只产生 1 条 inboxKey、1 条通知 sent），并验证批准/未绑定/群/超龄事件零副作用拒绝；见 `report/QQ_DSH_STUB_INTEGRATION_2026-11-10.md`。stub 非真实 QQ，不解除 BLOCKED；用户提供真实端点后按同一流程（`im probe` → `scripts/acceptance/qq-setup.mjs`）做真实验收。
 
-**端点核对（2026-11-10，用户提供的 QQ 地址）**：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 是**官方 QQ 机器人开放平台**（bot.q.qq.com）接口，不是 OneBot v11：只读探测返回 `{"message":"不支持的调用","code":11001}`。官方平台用 AppID + ClientSecret 换 2 小时有效的 `access_token`（`POST /app/getAppAccessToken`，请求头 `Authorization: QQBot <token>`），WS 需先 `GET /gateway` 再 op2 Identify（intents `GROUP_AND_C2C_EVENT=1<<25`），单聊按 `user_openid` 寻址并用 `msg_id` 被动回复。已新增只读探测脚本 `scripts/acceptance/qq-official-probe.mjs`（4 项单测，不打印 token/secret）。若要接官方机器人，需要用户提供 AppID/ClientSecret 环境变量并授权新增官方 QQ 机器人 transport（`im.transport=qq-official`）与配套设计更新；否则改供 OneBot v11 桥接端点，现有适配器可直接使用。 已实现该 transport（src/adapters/channels/qq-official.js、im probe/im listen//status 接线、13 项测试，见 eport/QQ_OFFICIAL_TRANSPORT_2026-11-10.md）；真实探测待用户提供 QQBOT_APP_ID/QQBOT_APP_SECRET 环境变量后执行 qq-official-probe.mjs 与 im listen。
+**端点核对（2026-11-10，用户提供的 QQ 地址）**：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 是**官方 QQ 机器人开放平台**（bot.q.qq.com）接口，不是 OneBot v11：只读探测返回 `{"message":"不支持的调用","code":11001}`（官方平台用 AppID + ClientSecret 换短期 `access_token`，事件按 `user_openid` 寻址）。曾据此短暂实现过 `im.transport=qq-official`，**已按用户 2026-11-10 决定整体删除**（保持轻量化，见 DESIGN D-15 / SPEC §22.3）：现只有 `dsh-im` 与 `onebot-v11` 两种 transport，官方端点必须经 OneBot v11 桥接（如 NapCat）转换。T16.2 仍待真实 OneBot 桥接端点后验收。
 
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
