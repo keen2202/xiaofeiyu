@@ -44,9 +44,10 @@ node scripts/acceptance/real-dm.mjs `
 ## 3. 只读核对
 
 ```powershell
-node cli.mjs im probe      # 桥接能力探测（get_status/get_login_info）
-node cli.mjs im status     # IM 组件、绑定的 sender/会话、inbox/outbox 计数
-node cli.mjs backup status # 保护状态与最新恢复点年龄
+node cli.mjs im probe        # 桥接能力探测（get_status/get_login_info）
+node cli.mjs im status       # IM 组件、绑定 sender/会话、inbox/outbox 计数
+node cli.mjs im status --probe  # 额外做一次只读桥接探测，显示 liveProbe
+node cli.mjs backup status   # 保护状态与最新恢复点年龄
 ```
 
 真实写入失败（not_sent/unknown）时不要重试：先按 `doc/report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`

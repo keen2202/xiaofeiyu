@@ -69,6 +69,25 @@ test('im status reports the IM component, bindings and delivery counters read-on
   }
 });
 
+test('im status loads config.json from an explicit --data-dir', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cli-'));
+  try {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ im: { transport: 'onebot-v11', onebot: { baseUrl: 'http://127.0.0.1:3000', websocketUrl: 'ws://127.0.0.1:3001' } } }),
+      'utf8'
+    );
+    const stdout = collector();
+    const code = await main(['im', 'status', '--data-dir', dir], { stdout, stderr: collector() });
+    assert.equal(code, 0);
+    const parsed = JSON.parse(stdout.text());
+    assert.equal(parsed.component.transport, 'onebot-v11');
+    assert.equal(parsed.component.enabled, false);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('sensitive CLI actions fail closed without an interactive TTY', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cli-'));
   try {

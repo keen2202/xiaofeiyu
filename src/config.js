@@ -684,6 +684,10 @@ export class ConfigService {
       file = file || (this.env.DSH_BILI_UNIFIED_CONFIG
         ? path.resolve(this.env.DSH_BILI_UNIFIED_CONFIG)
         : path.join(dataDir, 'config.json'));
+    } else if (!file && (await pathExists(path.join(dataDir, 'config.json')))) {
+      // An explicit --data-dir may carry its own config.json; load it instead of
+      // silently falling back to defaults (CLI inspection commands rely on it).
+      file = path.join(dataDir, 'config.json');
     }
     this.dataDir = dataDir;
     this.file = file;

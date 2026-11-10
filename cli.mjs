@@ -275,7 +275,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         'node cli.mjs operation resolve <id> confirmed|not_sent --receipt <json> [--evidence-ref <ref>] --note <note> --confirm',
         'node cli.mjs operation cancel <id> --reason <text> --confirm',
         'node cli.mjs outbox resolve <id> confirmed|not_sent --receipt <json> --note <note> --confirm',
-        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe | im status [--json]',
+        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe | im status [--probe]',
         'node cli.mjs migration <prepare|export|release|import|validate|activate|status|abort|disable-target|rollback|release-hold> ...',
         '  prepare --target <instance> [--executor-stop-evidence <text>] --confirm; activate <id> --receipt <file> --source-stopped --confirm',
         '  release-hold <hold-id> --task <task-id> --note <note> --confirm',
@@ -420,8 +420,25 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     }
     // Read-only IM inspection: adapter/bridge capability state, local bindings
     // and inbox/outbox counters. No message is sent and no human proof is asked.
+    // `--probe` additionally performs the read-only OneBot capability probe
+    // (get_status/get_login_info) so an operator can see the live bridge state.
     if (command[0] === 'im' && command[1] === 'status') {
       const status = await runtime.status(principal);
+      let liveProbe = null;
+      if (flags.probe === true) {
+        const current = runtime.configService.get();
+        if (current.im?.transport === 'onebot-v11' && current.im.onebot?.baseUrl) {
+          const { createOneBotQqHost } = await import('./src/adapters/channels/onebot-qq.js');
+          const host = createOneBotQqHost({
+            config: current,
+            env: process.env,
+            logger: { debug() {}, info() {}, warn() {} }
+          });
+          if (host) liveProbe = await host.describeCapabilities();
+        } else {
+          liveProbe = { status: 'unavailable', reason: 'onebot-v11 is not configured' };
+        }
+      }
       const snapshot = await runtime.store.getSnapshot();
       const bindings = Object.values(snapshot.bindings || {})
         .filter((binding) => !binding.revokedAt)
@@ -442,6 +459,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       const outbox = Object.values(snapshot.outbox || {});
       print(stdout, {
         component: status.components.im,
+        liveProbe,
         bindings,
         inbox: { total: inbox.length, byStatus: countByStatus(inbox) },
         outbox: {
@@ -965,3 +983,4 @@ if (invokedDirectly) {
     }
   );
 }
+

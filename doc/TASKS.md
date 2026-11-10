@@ -263,7 +263,9 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **实现状态（2026-11-09 探测，保持 BLOCKED）**：本机 DSH 0.2.2-rc.1 未提供 dsh-im 宿主通道（`status.im` 为 enabled=false / configured=false / reason=disabled，属未启用而非加载失败），QQ 客户端在运行但未发现 OneBot/NapCat 类桥接监听；无可信宿主消息来源，按 FR-IM-007 不启用任何 IM 能力，也不以 Mock 冒充真实接入（见 `report/DSH_HOST_PROBE_2026-11-09.md` §6）。解除条件：提供可访问的真实 dsh-im 宿主或用户授权的 OneBot v11 桥接端点，并完成只读能力/身份语义探测。
 
-**实现状态（2026-11-09，QQ 方向）**：按用户"IM 接入使用 QQ"授权，已实现可选的 OneBot v11 宿主适配（`src/adapters/channels/onebot-qq.js`、`test/onebot-channel.test.js` 10 项、配置/CLI `im probe`/`/status` 接线），本机 stub 验证了只读探测、token 鉴权与 fail-closed 语义；因本机无真实 OneBot 桥接端点，真实 QQ 收发与回执未验证，维持 **BLOCKED**，见 `report/QQ_ONEBOT_INTEGRATION_2026-11-09.md` §5。
+**实现状态（2026-11-09，QQ 方向）**：按用户"IM 接入使用 QQ"授权，已实现可选的 OneBot v11 宿主适配（`src/adapters/channels/onebot-qq.js`、`test/onebot-channel.test.js` 10 项、配置/CLI `im probe`/`im status`/`/status` 接线），本机 stub 验证了只读探测、token 鉴权与 fail-closed 语义；因本机无真实 OneBot 桥接端点，真实 QQ 收发与回执未验证，维持 **BLOCKED**，见 `report/QQ_ONEBOT_INTEGRATION_2026-11-09.md` §5。
+
+**实现状态（2026-11-10，真实 DSH 内 stub 联调）**：在真实 DSH 0.2.2-rc.1 组合内用本地 OneBot stub 跑通"插件启动→WS 连接→私聊事件→绑定解析→入站去重→outbox 保护门禁→OneBot HTTP 发送"全链路（`/status` 的 IM 组件 available、重复事件只产生 1 条 inboxKey、1 条通知 sent），见 `report/QQ_DSH_STUB_INTEGRATION_2026-11-10.md`。stub 非真实 QQ，不解除 BLOCKED；用户提供真实端点后按同一流程（`im probe` → `scripts/acceptance/qq-setup.mjs`）做真实验收。
 
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 

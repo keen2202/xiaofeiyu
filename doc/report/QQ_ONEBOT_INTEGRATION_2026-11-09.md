@@ -113,3 +113,6 @@
     `account verify` → `backup policy/create`（TTY）→ `config update`（TTY）→ 单条 `dm --go`（TTY）→ 取证；
   - 两个脚本的 `--check` 模式已在本机验证（只校验参数/打印计划，不执行、不发消息）。
 - 真实 QQ 验收仍未进行：本机没有 OneBot 桥接在监听，也没有可用的 token/机器人 QQ；保持 BLOCKED 等用户提供端点。
+- 2026-11-10 补充：已在**真实本地 DSH** 组合内用本地 OneBot stub 跑通完整链路（WS 事件 → 绑定解析 → 入站去重 →
+  outbox 保护门禁 → `send_private_msg`），见 `QQ_DSH_STUB_INTEGRATION_2026-11-10.md`；stub 不等于真实 QQ，
+  T16.2 仍 BLOCKED，等待真实端点后替换配置即可复用同一流程。
