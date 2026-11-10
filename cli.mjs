@@ -76,11 +76,14 @@ function stableRequestId(action) {
 }
 
 async function dispatch(runtime, principal, action, input = {}, mode = 'dry', extra = {}) {
+  // JCS cannot encode undefined: optional flags must be omitted, not set to
+  // undefined (e.g. approval decide without --nonce used to crash here).
+  const cleanInput = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
   const envelope = {
     schemaVersion: 1,
     requestId: stableRequestId(action),
     action,
-    input,
+    input: cleanInput,
     mode
   };
   return runtime.commandService.execute(envelope, principal, {
