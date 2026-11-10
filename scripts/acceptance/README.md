@@ -63,3 +63,14 @@ node cli.mjs backup status   # 保护状态与最新恢复点年龄
 
 真实写入失败（not_sent/unknown）时不要重试：先按 `doc/report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`
 核查回执/outbox，再决定恢复流程。
+
+## 4. 凭据安全落盘（不打印值）
+
+```powershell
+# 不要把 Cookie 值写进仓库文件；从剪贴板/浏览器复制的整段 Cookie 通过管道传入即可
+$cookie = Read-Host '粘贴 B 站 Cookie 串（不会回显到日志）'
+$cookie | node scripts/acceptance/save-credentials.mjs
+```
+
+脚本只保留 `sessdata/bili_jct/buvid3/dedeuserid` 四个字段写入 `<dataDir>/credentials.json`，输出只含字段名与路径；
+随后在真实终端执行 `node cli.mjs account verify` 做只读 whoami 绑定。建议验收结束后轮换 Cookie。

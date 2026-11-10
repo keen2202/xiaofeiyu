@@ -118,3 +118,7 @@
 - 2026-11-10 补充：已在**真实本地 DSH** 组合内用本地 OneBot stub 跑通完整链路（WS 事件 → 绑定解析 → 入站去重 →
   outbox 保护门禁 → `send_private_msg`），见 `QQ_DSH_STUB_INTEGRATION_2026-11-10.md`；stub 不等于真实 QQ，
   T16.2 仍 BLOCKED，等待真实端点后替换配置即可复用同一流程。
+- 2026-11-10 端点核对：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 经只读探测
+  返回官方 QQ 机器人错误体 `{"message":"不支持的调用","code":11001,"err_code":40011002}`，**不是 OneBot v11 协议**；
+  当前适配器无法直连官方 QQ 机器人 API。需要用户改供 OneBot v11 桥接（NapCat/Lagrange 等）端点，
+  或另行授权实现官方 QQ 机器人适配（需要 AppID/AppSecret，且官方 C2C 消息按 openid 寻址、仅能回复已与机器人交互的用户）。

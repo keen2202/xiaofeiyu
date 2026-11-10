@@ -11,7 +11,8 @@
 | 真实数据目录 | `C:\Users\22338\.dsh\dsh-bili-unified`（`DSH_HOME=C:\Users\22338\.dsh`）已初始化：`state.json`、`instance.json`、`artifacts/`、`journal/`、`diary/`、`production-work/` |
 | 实例状态 | `active`，`activationRevision=1`，capabilities 含 `core:* / platform:bilibili / production:local / publish:manual / publish:external / im` |
 | 恢复状态 | `recovery.phase=normal`，holds=0，unknownOperations=0 |
-| 凭据 | `bound=false`（尚未放置 B 站 Cookie 文件） |
+| 凭据 | 2026-11-10 已放置并绑定：`credentials.json`（仅四字段，ACL 仅当前用户可读写），`account verify` whoami 通过，mid `3546827282450731`（白阑王） |
+| 备份配置 | owner 已接受 `D:\dsh-bili-backups`（同物理盘，非独立故障域），目录已创建；策略/恢复点尚未创建（需 TTY） |
 | 备份保护 | `unprotected / policy_not_configured`（尚无策略与恢复点） |
 | 物理介质 | **仅 1 块物理磁盘**：NVMe `SAMSUNG MZALQ512HALU-000L2`（Disk 0），C: 与 D: 是同一磁盘的两个分区；无外置 USB/网络盘 |
 | 桌面 DSH profile | 未改动（`~/.dsh/profiles/desktop` 保持应用管理） |
@@ -192,3 +193,35 @@ node cli.mjs outbox resolve ...   # 仅在产生 IM 通知且结果未知时，�
 | 真实数据目录 `node cli.mjs account verify`（无凭据） | `CREDENTIAL_MISSING: SESSDATA is missing`；`credentials.bound` 仍为 false |
 
 结论：当前会话（无可靠 TTY、无凭据）无法绕过人类挑战、备份保护或凭据检查；上述步骤必须由 owner 本人完成。
+
+## 8. 2026-11-10 实际进展与剩余人工步骤
+
+已由 assistant 完成（无人类挑战、无平台写）：
+
+- 凭据安全落盘：`C:\Users\22338\.dsh\dsh-bili-unified\credentials.json`（仅 sessdata/bili_jct/buvid3/dedeuserid，
+  值未出现在任何输出/文档；ACL 已改为仅当前用户可读写）；
+- 真实只读账号核验：`node cli.mjs account verify` 通过（whoami，mid=3546827282450731 / 白阑王，`verifiedFrom=whoami`），
+  `/status` 中 `credentials.bound=true`、`accounts` 与 `activeAccountRef` 已绑定；
+- 备份目标：按 owner 选择创建 `D:\dsh-bili-backups`（同物理盘，报告须标注"非独立故障域"）；`backup.status` 仍为
+  `unprotected/policy_not_configured`；
+- 只读预检 `node scripts/acceptance/preflight.mjs` 当前唯一问题：尚无有效恢复点。
+
+剩余步骤必须由 owner 在真实 TTY 中执行（人类挑战不可代答）：
+
+1) 准备验收输入（`<PEER_MID>` 必须不是当前绑定账号 3546827282450731）：
+
+```powershell
+node scripts/acceptance/preflight.mjs --write-template
+# 编辑 .dsh-probe/acceptance/inputs.template.json 后：
+node scripts/acceptance/preflight.mjs --inputs .dsh-probe/acceptance/inputs.template.json
+```
+
+2) 一条命令完成 TTY 步骤（会依次要求输入 4 次一次性挑战短语）：
+
+```powershell
+node scripts/acceptance/real-dm.mjs --to <PEER_MID> --text "<验收文本>" --dest "D:\dsh-bili-backups" --failure-domain "same-physical-disk:D (NVMe Disk0; NOT independent)" --verified-by "白阑王"
+```
+
+3) 把 `dm`/`task get`/`status` 输出与 `.dsh-probe/acceptance/real-dm-evidence-*.json` 发给维护者归档。
+
+> 安全提示：B 站 Cookie 已在聊天中明文传递；验收完成后建议在 B 站端重新登录/退出全部设备以轮换 SESSDATA 与 bili_jct。
