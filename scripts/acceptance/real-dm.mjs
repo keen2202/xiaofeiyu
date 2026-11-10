@@ -133,11 +133,19 @@ runCapture(['backup', 'verify', latest.backupId], flags);
 info('步骤 4/6：打开 DM 真实写入配置（TTY 人类挑战）');
 runInherited(['config', 'update', '--file', configFile, '--confirm'], flags);
 
-info('步骤 5/6：记录保护点时间并执行单条 DM（TTY 人类挑战）');
+info('步骤 5/6：确认保护状态并执行单条 DM（TTY 人类挑战）');
+// `backup status` reports the policy/points but NOT the derived protection
+// verdict; the protection status lives in the runtime `status` command
+// (`backup.status` = protected/unprotected/degraded + reason + ageMs).
 const protectedState = runCapture(['backup', 'status'], flags);
-const protection = protectedState.service?.status;
-if (protection !== 'protected') fail(`当前保护状态为 ${protection}，真实写入会被 BACKUP_UNPROTECTED/BACKUP_STALE 拒绝`);
-console.log(`[acceptance] 保护状态: ${protection}, 最新点年龄: ${protectedState.service.latest?.ageMs}ms`);
+const runtimeStatus = runCapture(['status'], flags);
+const protection = runtimeStatus.backup?.status ?? null;
+if (protection !== 'protected') {
+  fail(`当前保护状态为 ${protection}（${runtimeStatus.backup?.reason || 'unknown'}），真实写入会被 BACKUP_UNPROTECTED/BACKUP_STALE 拒绝；请重新运行 backup create 生成新鲜恢复点后再执行`);
+}
+const maxAgeMinutes = protectedState.service?.maxPointAgeMinutes ?? null;
+const ageMs = runtimeStatus.backup?.ageMs ?? null;
+console.log(`[acceptance] 保护状态: ${protection}, 最新点年龄: ${ageMs}ms（上限 ${maxAgeMinutes} 分钟）`);
 runInherited(['dm', '--to', to, '--text', text, '--go'], flags);
 
 info('步骤 6/6：取证');
@@ -159,7 +167,9 @@ const evidence = {
     backupId: latest?.backupId || null,
     kind: latest?.kind || null,
     cutAt: latest?.cutAt || null,
-    protection: protectedState.service?.status || null,
+    protection: runtimeStatus.backup?.status || null,
+    protectionReason: runtimeStatus.backup?.reason || null,
+    protectionAgeMs: runtimeStatus.backup?.ageMs ?? null,
     failureDomain: protectedState.service?.failureDomain || failureDomain,
     verifiedBy: protectedState.service?.failureDomainVerifiedBy || verifiedBy
   },
