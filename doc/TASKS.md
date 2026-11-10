@@ -267,7 +267,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
-**目标文件**：`src/adapters/channels/dsh-im.js`、`src/adapters/channels/onebot-qq.js`（可选 OneBot v11 宿主实现）、`cli.mjs`（`im probe`）、`test/dsh-im-adapter.test.js`、`test/onebot-channel.test.js`；真实证据写入获批后的交付记录，不采集秘密/无关聊天正文。
+**目标文件**：`src/adapters/channels/dsh-im.js`、`src/adapters/channels/onebot-qq.js`（可选 OneBot v11 宿主实现）、`cli.mjs`（`im probe`/`im status`）、`scripts/acceptance/qq-setup.mjs`、`test/dsh-im-adapter.test.js`、`test/onebot-channel.test.js`；真实证据写入获批后的交付记录，不采集秘密/无关聊天正文。
 
 **工作**：先只读核对实际服务注册、消息来源、bot/sender/conversation/eventId、生命周期、发送接口及回执语义、人类证明/工具回调区别；不靠发消息试探权限。基于证据实现最薄映射和 start/stop，不假定 SPEC 内部方法名就是宿主 SDK，不安装 QQ/微信 SDK。
 
@@ -483,7 +483,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **依赖**：T11、T03、T09；另需用户明确授权账号、内容、动作、额度和发布器执行范围。
 
-**目标文件**：`test/manual/bilibili.acceptance.mjs`、`test/manual/publisher.acceptance.mjs`。
+**目标文件**：`test/manual/bilibili.acceptance.mjs`、`test/manual/publisher.acceptance.mjs`、`scripts/acceptance/real-dm.mjs`（owner 在真实 TTY 中运行的引导脚本）。
 
 **工作**：config validate→显式account verify/whoami→只读Browse→评论/审批/白名单DM干跑→Manual Bundle。真实平台写入前还须建立owner核验的独立有效恢复点并确认无匹配RecoveryHold；缺保护条件不得用测试配置或go绕过。真实评论/DM、External投稿逐动作再授权，一次一条最低额度，记录备份cut与操作回执，不批量外发。
 

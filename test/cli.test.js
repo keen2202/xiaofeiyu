@@ -49,6 +49,26 @@ test('status works in an isolated data dir without network and exits zero', asyn
   }
 });
 
+test('im status reports the IM component, bindings and delivery counters read-only', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cli-'));
+  try {
+    const stdout = collector();
+    const code = await main(['im', 'status', '--data-dir', dir], { stdout, stderr: collector() });
+    assert.equal(code, 0);
+    const parsed = JSON.parse(stdout.text());
+    assert.equal(parsed.component.enabled, false);
+    assert.equal(parsed.component.transport, 'dsh-im');
+    assert.equal(parsed.component.configured, false);
+    assert.deepEqual(parsed.bindings, []);
+    assert.equal(parsed.inbox.total, 0);
+    assert.deepEqual(parsed.inbox.byStatus, {});
+    assert.equal(parsed.outbox.total, 0);
+    assert.deepEqual(parsed.outbox.recent, []);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('sensitive CLI actions fail closed without an interactive TTY', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-cli-'));
   try {

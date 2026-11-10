@@ -275,7 +275,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         'node cli.mjs operation resolve <id> confirmed|not_sent --receipt <json> [--evidence-ref <ref>] --note <note> --confirm',
         'node cli.mjs operation cancel <id> --reason <text> --confirm',
         'node cli.mjs outbox resolve <id> confirmed|not_sent --receipt <json> --note <note> --confirm',
-        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe [--json]',
+        'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe | im status [--json]',
         'node cli.mjs migration <prepare|export|release|import|validate|activate|status|abort|disable-target|rollback|release-hold> ...',
         '  prepare --target <instance> [--executor-stop-evidence <text>] --confirm; activate <id> --receipt <file> --source-stopped --confirm',
         '  release-hold <hold-id> --task <task-id> --note <note> --confirm',
@@ -416,6 +416,45 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   try {
     if (command[0] === 'status') {
       print(stdout, await runtime.status(principal));
+      return 0;
+    }
+    // Read-only IM inspection: adapter/bridge capability state, local bindings
+    // and inbox/outbox counters. No message is sent and no human proof is asked.
+    if (command[0] === 'im' && command[1] === 'status') {
+      const status = await runtime.status(principal);
+      const snapshot = await runtime.store.getSnapshot();
+      const bindings = Object.values(snapshot.bindings || {})
+        .filter((binding) => !binding.revokedAt)
+        .map((binding) => ({
+          bindingId: binding.bindingId,
+          adapterId: binding.adapterId,
+          botAccountId: binding.botAccountId,
+          senderRef: binding.senderRef,
+          conversationIds: binding.conversationIds,
+          scopes: binding.scopes
+        }));
+      const countByStatus = (items) => items.reduce((acc, item) => {
+        const key = item.status || 'unknown';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {});
+      const inbox = Object.values(snapshot.inboxKeys || {});
+      const outbox = Object.values(snapshot.outbox || {});
+      print(stdout, {
+        component: status.components.im,
+        bindings,
+        inbox: { total: inbox.length, byStatus: countByStatus(inbox) },
+        outbox: {
+          total: outbox.length,
+          byStatus: countByStatus(outbox),
+          recent: outbox.slice(-5).map((item) => ({
+            notificationId: item.id,
+            taskId: item.taskId || null,
+            status: item.status,
+            updatedAt: item.updatedAt || null
+          }))
+        }
+      });
       return 0;
     }
     if (command[0] === 'config' && command[1] === 'update') {

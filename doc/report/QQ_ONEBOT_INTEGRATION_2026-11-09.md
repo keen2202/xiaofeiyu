@@ -98,7 +98,18 @@
    本地 TTY 审批路径仍可用。
 
 ## 6. 与设计文档的同步
-
 - DESIGN D-15 / §适配器与 SPEC §22.3 已补充"可选本地 OneBot v11 宿主实现（用户提供端点，不自研 QQ SDK）"的说明；
 - TASKS T16.2 实现状态更新为"代码已就绪，真实桥接未验证 → 保持 BLOCKED"；
 - 真实 QQ 消息发送、审批回信与回执语义必须等真实桥接后按 FR-IM-008 单独验收，不能用本报告的 stub 结果替代。
+
+## 7. 操作入口（2026-11-10 补充，仍待真实端点）
+
+- 新增只读 CLI `node cli.mjs im status`：输出 IM 组件状态（enabled/configured/started/transport/hostSource/capabilities）、
+  当前有效绑定（sender/会话/scopes）与 inbox/outbox 计数；不发送消息、不要求人类挑战，有单测覆盖。
+- 新增引导脚本（需在真实交互终端运行，详见 `scripts/acceptance/README.md`）：
+  - `node scripts/acceptance/qq-setup.mjs --base-url ... --ws-url ... --owner-qq ... [--check]`：
+    `im probe`（只读）→ `config update`（TTY）→ `im bind`（TTY）→ `im status`；
+  - `node scripts/acceptance/real-dm.mjs --to ... --text ... --dest ... --failure-domain ... --verified-by ... [--check]`：
+    `account verify` → `backup policy/create`（TTY）→ `config update`（TTY）→ 单条 `dm --go`（TTY）→ 取证；
+  - 两个脚本的 `--check` 模式已在本机验证（只校验参数/打印计划，不执行、不发消息）。
+- 真实 QQ 验收仍未进行：本机没有 OneBot 桥接在监听，也没有可用的 token/机器人 QQ；保持 BLOCKED 等用户提供端点。
