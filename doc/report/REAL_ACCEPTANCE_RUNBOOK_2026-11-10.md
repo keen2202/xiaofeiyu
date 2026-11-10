@@ -225,3 +225,18 @@ node scripts/acceptance/real-dm.mjs --to <PEER_MID> --text "<验收文本>" --de
 3) 把 `dm`/`task get`/`status` 输出与 `.dsh-probe/acceptance/real-dm-evidence-*.json` 发给维护者归档。
 
 > 安全提示：B 站 Cookie 已在聊天中明文传递；验收完成后建议在 B 站端重新登录/退出全部设备以轮换 SESSDATA 与 bili_jct。
+
+### 2026-11-10 补充：验收目标已确认
+
+- owner 指定 B 站白名单收件人 mid：`508187015`（只读公开资料核验：昵称"晓晓鸥汀"，存在且可读）；
+- 只读关注关系核验（使用已绑定凭据，不打印 Cookie）：`attribute=6`（**互相关注**），因此默认 `directMessages.requireMutual=true` 可通过；
+- 验收文本：`hello`；
+- `node scripts/acceptance/preflight.mjs --to 508187015 --text "hello" --dest "D:\dsh-bili-backups" --failure-domain "same-physical-disk:D (NVMe Disk0; NOT independent)" --verified-by "白阑王"`
+  结果仅剩一个问题：**尚无有效恢复点**。剩余步骤只能由 owner 在真实 TTY 中执行：
+
+```powershell
+node scripts/acceptance/real-dm.mjs --to 508187015 --text "hello" --dest "D:\dsh-bili-backups" --failure-domain "same-physical-disk:D (NVMe Disk0; NOT independent)" --verified-by "白阑王"
+```
+
+脚本会依次要求 4 次一次性挑战短语（backup policy → backup create → config update → dm --go），
+完成后把输出与 `.dsh-probe/acceptance/real-dm-evidence-*.json` 发给维护者归档。
