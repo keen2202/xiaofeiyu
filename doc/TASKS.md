@@ -269,7 +269,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **端点核对（2026-11-10，用户提供的 QQ 地址）**：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 是**官方 QQ 机器人开放平台**（bot.q.qq.com）接口，不是 OneBot v11：只读探测返回 `{"message":"不支持的调用","code":11001}`（官方平台用 AppID + ClientSecret 换短期 `access_token`，事件按 `user_openid` 寻址）。曾据此短暂实现过 `im.transport=qq-official`，**已按用户 2026-11-10 决定整体删除**（保持轻量化，见 DESIGN D-15 / SPEC §22.3）：现只有 `dsh-im` 与 `onebot-v11` 两种 transport，官方端点必须经 OneBot v11 桥接（如 NapCat）转换。T16.2 仍待真实 OneBot 桥接端点后验收。
 
-**实现状态（2026-11-10，NapCat 桥接就绪，待真实入站/绑定）**：已在本机安装 NapCat 4.18.42 + 一体化 QQ Shell 9.9.33-52230（`D:\Tools\NapCat`），修复两个启动问题（`launcher.bat` 注入错目标改为自带 Shell；多进程 worker 起不来改用 `NAPCAT_DISABLE_MULTI_PROCESS=1` 单进程），机器人小号 `275748387` 已登录，OneBot v11 HTTP `127.0.0.1:3000` + WS `127.0.0.1:3001` 已配置 token 并监听。真实只读探测通过：`node cli.mjs im probe --config .dsh-probe/napcat-onebot.config.json` 返回 `ok=true / status=available / humanIdentity=unverified / delivery.query=false`，WS 已收到 NapCat `meta_event/lifecycle/connect`，`get_status`（online）、`get_login_info`（275748387）、`get_friend_list`、`send_private_msg`（自检 message_id=192271706）均成功，无 token 请求被 403 拒绝；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md`。**入站已打通**：owner（2233843382）用 QQ 私聊发 `ping` 被 `im listen` 捕获（eventId msg:275841081，senderRef 2233843382，private，trusted=true，humanAssurance=unverified，2026-11-10T13:15:39Z）。仍缺：TTY `config update` + `im bind` 接线与插件内真实回信验收（首次真实 IM 发送需用户单独授权，审批仍 fail-closed），故 T16.2 保持 **BLOCKED**。
+**实现状态（2026-11-10，NapCat 桥接就绪，待真实入站/绑定）**：已在本机安装 NapCat 4.18.42 + 一体化 QQ Shell 9.9.33-52230（`D:\Tools\NapCat`），修复两个启动问题（`launcher.bat` 注入错目标改为自带 Shell；多进程 worker 起不来改用 `NAPCAT_DISABLE_MULTI_PROCESS=1` 单进程），机器人小号 `275748387` 已登录，OneBot v11 HTTP `127.0.0.1:3000` + WS `127.0.0.1:3001` 已配置 token 并监听。真实只读探测通过：`node cli.mjs im probe --config .dsh-probe/napcat-onebot.config.json` 返回 `ok=true / status=available / humanIdentity=unverified / delivery.query=false`，WS 已收到 NapCat `meta_event/lifecycle/connect`，`get_status`（online）、`get_login_info`（275748387）、`get_friend_list`、`send_private_msg`（自检 message_id=192271706）均成功，无 token 请求被 403 拒绝；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md`。**真实入站 + 插件接线已完成**：owner（2233843382）用 QQ 发私聊先由 `im listen` 抓到 `ping`（eventId msg:275841081，2026-11-10T13:15:39Z）；随后 owner 在真实 TTY 完成 `config update` + `im bind`（binding_4ad9d6b3437a4c9ab0b065f0f0c0c57c），运行时 ImBridge `started=true`、capabilities available（receive/send），结构化命令 `{"action":"task.list","input":{}}`（eventId msg:1776327543）在插件侧 `accepted=true` 并落库 `inboxKeys[...] status=accepted`（executionMode=dry），账本含 `im.binding.created` / `im.command.received`；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md` §7。仍缺：插件侧 outbound 回信（`im.notifications.enabled=false`，且需新鲜恢复点与首次真实 IM 发送授权）与人工审批闭环（T12.1），故 T16.2 保持 **BLOCKED**。
 
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
@@ -474,6 +474,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 **工作/验收**：分别报告每项证据与条件。真实 B 站写入可不授权、真实跨 OS 可缺环境，但必须如实未实测；真实 IM 是桥接能力的完成门槛。**本地真实视频不是本项可选测试，归 T17.3 必需。**
 
 #### T12.1：真实 IM 入站、人工审批/拒绝与回信【BLOCKED】
+
+**实现状态（2026-11-10，保持 BLOCKED）**：真实 QQ 入站已通过 NapCat OneBot 桥接在插件侧验证并落库（`eventId=msg:1776327543`，绑定 `binding_4ad9d6b3437a4c9ab0b065f0f0c0c57c`，inboxKey status=accepted，action=task.list，dry）；但插件内 outbound 回信（当前 `im.notifications.enabled=false`，且回信派发需新鲜恢复点并受保护/额度门禁）与人工审批/拒绝闭环未实测，故保持 **BLOCKED**；详见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md` §7。
 
 **依赖**：T11、T16.2；另需用户对测试会话/主体/消息/回信范围的单独授权。
 

@@ -75,7 +75,7 @@ WebUI 仅监听 `127.0.0.1:6099`（`host` 已从 `::` 改为回环）。OneBot t
 无 renderer），但 NapCat 核心与 OneBot 仍在线（`get_status` online，`im probe` ok），属 headless 运行；
 owner 个人 QQ 客户端进程当时不在运行（与此前排查 NapCat 时结束 QQ 进程树的操作有关），与桥接无关。
 
-## 5. 插件侧待执行（需真实终端 TTY）
+## 5. 插件侧接线（2026-11-10 已由 owner 在真实 TTY 完成）
 
 本机草稿（均已生成在 `.dsh-probe/`，不入库）：
 
@@ -107,3 +107,25 @@ node cli.mjs im status --probe
 - 不要运行 `launcher.bat`；不要让 QQ 自动更新（若更新，需要重新匹配 NapCat 版本）。
 - 插件侧 token 通过环境变量 `ONEBOT_ACCESS_TOKEN` 提供，值取自本机 `.onebot-token.txt`，不写进
   配置/仓库/报告。
+
+## 7. 插件侧 IM 接线真实验证（2026-11-10）
+
+owner 在真实 TTY 完成 `config update` + `im bind` 后，真实数据目录（`C:\Users\22338\.dsh\dsh-bili-unified`）核验：
+
+- `config.json`：`im.enabled=true`、`transport=onebot-v11`、`baseUrl=http://127.0.0.1:3000`、
+  `websocketUrl=ws://127.0.0.1:3001`、`accessTokenEnv=ONEBOT_ACCESS_TOKEN`；`config validate` 通过；
+- 绑定：`binding_4ad9d6b3437a4c9ab0b065f0f0c0c57c`，adapterId=dsh-im、botAccountId=275748387、
+  senderRef=2233843382、conversationIds=[`private:2233843382`]、scopes=production.create/task.read.own/
+  task.cancel.own、未撤销；
+- 运行时 IM bridge 启动：`started=true`，capabilities `status=available`、`receive=true`、`send=true`、
+  `description="onebot-v11 qq 275748387"`（插件通过 OneBot WS 真实连上 NapCat）；
+- 真实入站结构化命令（owner QQ → 机器人）：`{"action":"task.list","input":{}}`
+  - 事件：`eventId=msg:1776327543`、`senderRef=2233843382`、`conversationId=private:2233843382`；
+  - 插件响应：`accepted=true`、`status=accepted`、`notificationId=null`、`protectionError=null`、`deduplicated=false`；
+  - 落库：`inboxKeys["im:dsh-im:275748387:private:2233843382:msg:1776327543"]` status=accepted，
+    result.executionMode=dry，commandHash=jcs-sha256-v1:919a3da5…；
+  - 账本事件：`im.binding.created`、`im.command.received`（action=task.list）。
+
+结论：**QQ → NapCat OneBot → 插件 ImBridge → 绑定解析 → command-service 的真实入站链路已打通**。
+尚未验证：插件侧 outbound 回信（当前 `im.notifications.enabled=false`，且回信派发要过保护/额度门禁，
+需要新鲜恢复点 + 用户对首次真实 IM 发送的单独授权），以及 T12.1 的人工审批/拒绝闭环。
