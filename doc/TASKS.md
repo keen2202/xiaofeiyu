@@ -465,7 +465,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：自动测试全部通过、无未处理rejection、无真实服务调用或真实用户目录写入，不用skip掩盖未完成。T17.3真实媒体与T22真实本地模块的隔离灾备演练均为必需；工具不足仅单列已完成离线结果，不能关闭完整T11门槛。IM契约必需，T16.2/T12.1可有明确外部BLOCKED，但必须进入交付矩阵。区分备份文件verify、只读数据恢复和外发解冻，不把任一阶段冒充灾备全恢复；真实故障域/介质/跨OS与真实平台另外列明。T11须以T19/T22/T17.3等全部明示验收为前提，任何单项结束都不代表全量完成。
 
-### T12：真实宿主/平台分项人工验收【BLOCKED，外部条件与授权未满足】
+### T12：真实宿主/平台分项人工验收【T12.1 DONE；T12.2/T12.3 BLOCKED】
 
 **依赖**：T12.1、T12.2、T12.3。
 
@@ -473,9 +473,9 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **工作/验收**：分别报告每项证据与条件。真实 B 站写入可不授权、真实跨 OS 可缺环境，但必须如实未实测；真实 IM 是桥接能力的完成门槛。**本地真实视频不是本项可选测试，归 T17.3 必需。**
 
-#### T12.1：真实 IM 入站、人工审批/拒绝与回信【BLOCKED】
+#### T12.1：真实 IM 入站、人工审批/拒绝与回信【DONE，拒绝路径】
 
-**实现状态（2026-11-10，保持 BLOCKED）**：真实 QQ 入站（eventId msg:1776327543 / msg:1424491180）与插件 outbound 回信均已验证：通知 `outbox_48db37219d1c4d41bbdff39681e378b4` status=sent、receipt externalId=1530582498，平台 get_msg 复核文本 `Task draft: accepted`（见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md` §7/§8）。仍缺 T12.1 验收本体：IM 来源草稿 Task → 人工审批/拒绝（IM 侧人类证明 unverified，审批 fail-closed，需本地 TTY 决策）→ task 状态回信闭环；无授权不实测，故保持 **BLOCKED**。
+**实现状态（2026-11-10，DONE，拒绝路径）**：真实 IM 入站 + 持久草稿 Task + 本地 TTY 人类拒绝 + outbox 真实状态回信已全链路验证：入站 `msg:1750364829`（comment.draft）→ `task_15f7069d709d408bb9b758d15b068647`（waiting_approval）→ TTY reject（`approval_9e929107db9143e2b2c01bd39a91ee2b`，decidedBy 本地 owner）→ Task failed → 两条真实回信 `externalId=790450181`（waiting_approval）/`191643848`（failed），OneBot `get_msg` 复核通过；IM 侧 approval.decide 负例被 `TRUST_UNAVAILABLE` fail-closed（无副作用）。全程无 B 站平台写入。详见 `report/T12_1_IM_APPROVAL_LOOP_2026-11-10.md`。approve 路径/真实评论写入仍属 T12.2 未实测范围。
 
 **依赖**：T11、T16.2；另需用户对测试会话/主体/消息/回信范围的单独授权。
 
