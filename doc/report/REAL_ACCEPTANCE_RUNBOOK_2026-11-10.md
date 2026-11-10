@@ -177,3 +177,16 @@ node cli.mjs outbox resolve ...   # 仅在产生 IM 通知且结果未知时，�
 
 以上命令是交接清单：备份策略、备份点与真实 DM 都需要 owner 本人在 TTY 中逐项确认；本 agent 未执行、
 也不会代为输入人类挑战。真实写入是否执行、执行目标与文本由用户决定。
+
+## 7. agent 侧安全门禁实测（2026-11-10）
+
+为确认"agent 不能代替 owner 完成敏感步骤"，在隔离临时目录对本 agent 的非 TTY 环境做了实测：
+
+| 命令（临时数据目录） | 结果 |
+|---|---|
+| `node cli.mjs backup policy --file <policy> --confirm` | `TRUST_UNAVAILABLE: interactive TTY is unavailable`；未生成 `backup-policy.json` |
+| `node cli.mjs config update --file <patch> --confirm` | `TRUST_UNAVAILABLE`；未生成/修改 `config.json` |
+| `node cli.mjs dm --to <mid> --text <text> --go` | 打印绑定摘要后 `TRUST_UNAVAILABLE`；未创建 Task/未外发 |
+| 真实数据目录 `node cli.mjs account verify`（无凭据） | `CREDENTIAL_MISSING: SESSDATA is missing`；`credentials.bound` 仍为 false |
+
+结论：当前会话（无可靠 TTY、无凭据）无法绕过人类挑战、备份保护或凭据检查；上述步骤必须由 owner 本人完成。

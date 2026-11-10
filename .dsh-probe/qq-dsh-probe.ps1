@@ -85,6 +85,25 @@ try {
   Write-Host "EMIT2_DELIVERED=$($emit2.delivered)"
   Start-Sleep -Seconds 2
 
+  # Rejected-event matrix (each must be rejected before any inbox/notification row)
+  function Send-Event([hashtable]$body) {
+    $json = $body | ConvertTo-Json -Depth 6
+    return (Invoke-RestMethod -Uri "$stubHttp/__emit" -Method Post -ContentType 'application/json' -Body $json).delivered
+  }
+  $nowSec = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $approval = @{ post_type = 'message'; message_type = 'private'; self_id = 123456789; user_id = 20002; message_id = 5003; time = $nowSec;
+    message = @(@{ type = 'text'; data = @{ text = '{"action":"approval.decide","input":{"approvalId":"approval_probe","decision":"approve"},"mode":"go"}' } }) }
+  Write-Host "EMIT_APPROVAL_DELIVERED=$(Send-Event $approval)"; Start-Sleep -Seconds 1
+  $unbound = @{ post_type = 'message'; message_type = 'private'; self_id = 123456789; user_id = 30003; message_id = 5004; time = $nowSec;
+    message = @(@{ type = 'text'; data = @{ text = '{"action":"task.list","input":{},"mode":"dry"}' } }) }
+  Write-Host "EMIT_UNBOUND_DELIVERED=$(Send-Event $unbound)"; Start-Sleep -Seconds 1
+  $group = @{ post_type = 'message'; message_type = 'group'; group_id = 40004; self_id = 123456789; user_id = 20002; message_id = 5005; time = $nowSec;
+    message = @(@{ type = 'text'; data = @{ text = '{"action":"task.list","input":{},"mode":"dry"}' } }) }
+  Write-Host "EMIT_GROUP_DELIVERED=$(Send-Event $group)"; Start-Sleep -Seconds 1
+  $old = @{ post_type = 'message'; message_type = 'private'; self_id = 123456789; user_id = 20002; message_id = 5006; time = ($nowSec - 3600);
+    message = @(@{ type = 'text'; data = @{ text = '{"action":"task.list","input":{},"mode":"dry"}' } }) }
+  Write-Host "EMIT_OLD_DELIVERED=$(Send-Event $old)"; Start-Sleep -Seconds 2
+
   $statusAfter = Invoke-Status -Uri $route -Session $session
   $parsedAfter = $statusAfter.body | ConvertFrom-Json
   Write-Host ("COUNTS_AFTER=" + ($parsedAfter.result.counts | ConvertTo-Json -Compress))
@@ -98,6 +117,9 @@ try {
   Write-Host '=== backup status (probe) ==='
   & node 'D:\Workespace\xiaofeiyu\cli.mjs' backup status --data-dir $probeDataDir 2>&1 | Select-Object -First 20
   Write-Host '=== stub log tail ==='
-  Get-Content 'D:\Workespace\xiaofeiyu\.dsh-probe\onebot-stub.log' -Tail 12 -ErrorAction SilentlyContinue
+  Get-Content 'D:\Workespace\xiaofeiyu\.dsh-probe\onebot-stub.log' -Tail 20 -ErrorAction SilentlyContinue
+  Write-Host '=== rejected-event log (host handler errors) ==='
+  Get-Content $err -ErrorAction SilentlyContinue | Select-String -Pattern 'onebot event handler failed|TRUST_UNAVAILABLE|FORBIDDEN|too old' |
+    Select-Object -First 15 | ForEach-Object { $_.Line }
   Write-Host 'QQ_DSH_PROBE_DONE'
 }

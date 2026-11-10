@@ -1,9 +1,9 @@
 # 真实 DSH + OneBot v11 宿主联调报告（stub，非真实 QQ）
 
 > 结论先行：在**本机真实 DSH 0.2.2-rc.1** 中，插件的可选 QQ 宿主（OneBot v11 薄客户端）已完整跑通
-> "DSH 插件启动 → 连接 OneBot WS → 接收私聊事件 → 绑定身份 → 命令/入站去重 → outbox 保护门禁 → OneBot HTTP 发送"链路。
-> 本次对端是**本地 stub**（不是 QQ、不是真实桥接），因此只证明协议与宿主接线正确，**不构成真实 QQ 接入验收**；
-> T16.2 仍为 BLOCKED，等待用户提供真实 OneBot 桥接端点/token/QQ 号。
+> "DSH 插件启动 → 连接 OneBot WS → 接收私聊事件 → 绑定身份 → 命令/入站去重 → outbox 保护门禁 → OneBot HTTP 发送"链路，
+> 并验证了审批/未绑定/群/超龄事件的**零副作用拒绝矩阵**。本次对端是**本地 stub**（不是 QQ、不是真实桥接），
+> 因此只证明协议与宿主接线正确，**不构成真实 QQ 接入验收**；T16.2 仍为 BLOCKED，等待用户提供真实 OneBot 桥接端点/token/QQ 号。
 
 ## 1. 环境与对象
 
@@ -84,17 +84,35 @@ stub 向已连接的 WS 客户端推送一条私聊消息（`message_id=5002`，
 RecoveryHold、`_assertProtected`（本轮用探针内 ledger 恢复点满足，20 分钟窗口）、通知配额与 `sending` 事务。
 未配置恢复点时该通知会保持 `pending` 且不发送（fail-closed），与设计一致。
 
-## 5. 证据与复现
+## 5. 拒绝矩阵（真实 DSH 内，全部零副作用）
+
+在同一个真实 DSH 进程里，除 1 条合法绑定私聊事件外，又注入了 4 类非法/不可用事件；关闭后
+inbox/outbox 仍为 `total=1 / accepted=1`、`total=1 / sent=1`，stub 也只收到 1 次 `send_private_msg`，
+即被拒事件没有产生任何 inboxKey、Task、通知或外发尝试：
+
+| 注入事件 | 预期 | 实测 |
+|---|---|---|
+| 已绑定发送者、`approval.decide`（mode=go） | 无人证明 → `TRUST_UNAVAILABLE`，不进入 inbox | 未新增 inbox/outbox（fail-closed） |
+| 未绑定发送者（user_id=30003）的 `task.list` | `FORBIDDEN` | 未新增 inbox/outbox |
+| 群消息（message_type=group） | 宿主只消费私聊，直接忽略 | 未新增 inbox/outbox |
+| 超龄私聊（occurredAt 约 1 小时前，maxMessageAgeSec=600） | `FORBIDDEN`（too old） | 未新增 inbox/outbox |
+
+该矩阵说明：OneBot 通道无法提供宿主人类证明时，**审批保持 fail-closed**；未绑定 sender、群消息、
+过期消息都不会落账或触发外发。
+
+## 6. 证据与复现
 
 - 复现脚本（本机、临时目录、stub；均为开发用，不写真实数据）：
   - `.dsh-probe/onebot-stub.mjs`（HTTP + 最小 WS 服务端，支持 `/__emit` 注入事件与 JSONL 日志）
   - `.dsh-probe/bind-probe.mjs`（探针数据目录写入 IM 配置与测试绑定）
   - `.dsh-probe/probe-backup.mjs`（探针数据目录创建测试用恢复点，满足 outbox 保护门禁）
-  - `.dsh-probe/qq-dsh-probe.ps1`（启动真实 DSH → 校验 IM 组件 → 注入事件 → 去重 → 关闭 → 读 im/outbox 状态）
-- 本地证据（不入库）：`.dsh-probe/qq-dsh-status.json`、`.dsh-probe/qq-dsh-probe-out.log`、`.dsh-probe/onebot-stub.log`。
+  - `.dsh-probe/qq-dsh-probe.ps1`（启动真实 DSH → 校验 IM 组件 → 注入合法/重复/审批/未绑定/群/超龄事件 →
+    关闭 → 读 im/outbox 状态；stderr 无可见日志时以零副作用作为 fail-closed 证据）
+- 本地证据（不入库）：`.dsh-probe/qq-dsh-status.json`、`.dsh-probe/qq-dsh-probe-out.log`、
+  `.dsh-probe/qq-dsh-reject-out.log`、`.dsh-probe/onebot-stub.log`。
 - 回归：`node --test test/onebot-channel.test.js` 10 项通过；全量套件见提交记录。
 
-## 6. 边界与后续
+## 7. 边界与后续
 
 **已验证**：QQ 宿主在真实 DSH 组合中的构建、WS 连接与鉴权、事件归一化、本地绑定解析、入站去重、
 通知 outbox 保护门禁与 OneBot 发送请求形状。
