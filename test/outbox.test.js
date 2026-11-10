@@ -136,3 +136,17 @@ test('notification budget is independent and enforced per minute', async () => {
     await harness.cleanup();
   }
 });
+
+test('a structured not_sent result keeps the channel error detail in the outbox', async () => {
+  const { harness, binding } = await setup();
+  const channel = makeMockChannel({ sendStatus: 'structured_not_sent' });
+  try {
+    const notification = await enqueue(harness, binding);
+    const result = await harness.effectGateway.dispatchNotification(notification.id, channel);
+    assert.equal(result.notification.status, 'failed');
+    assert.equal(result.notification.error.code, 'DEPENDENCY_UNAVAILABLE');
+    assert.match(result.notification.error.message, /EventChecker Failed/);
+  } finally {
+    await harness.cleanup();
+  }
+});

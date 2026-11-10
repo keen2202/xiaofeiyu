@@ -429,7 +429,10 @@ export class BilibiliClient {
   async _wbiKeys({ force = false } = {}) {
     const nowMs = this.now().getTime();
     if (!force && this.wbiCache && this.wbiCache.expiresAt > nowMs) return this.wbiCache;
-    const json = await this._request('https://api.bilibili.com/x/web-interface/nav', { read: true });
+    // WBI keys are infrastructure metadata (cached for 10 minutes), not content
+    // reads: reserving a read slot here would consume the 1500ms read gap and
+    // make the caller's real read (e.g. videoDetails) fail with RATE_LIMITED.
+    const json = await this._request('https://api.bilibili.com/x/web-interface/nav', { read: false });
     const images = json?.data?.wbi_img;
     if (!images?.img_url || !images?.sub_url) {
       throw new AppError('BILI_API_ERROR', 'WBI images are unavailable (empty keys are forbidden)');

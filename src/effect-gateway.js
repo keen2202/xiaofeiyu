@@ -1854,7 +1854,13 @@ export class EffectGateway {
       } else if (result.status === 'not_sent' || result.status === 'failed') {
         notification.status = 'failed';
         notification.failedAt = nowIso(this.now);
-        notification.error = { code: error?.code || 'DEPENDENCY_UNAVAILABLE', message: truncateText(error?.message || 'delivery failed', 300) };
+        // A channel may report a structured not_sent/failed result instead of
+        // throwing; keep its error detail (e.g. the platform retcode message).
+        const failure = error || result.error || null;
+        notification.error = {
+          code: failure?.code || 'DEPENDENCY_UNAVAILABLE',
+          message: truncateText(failure?.message || 'delivery failed', 300)
+        };
       } else {
         notification.status = 'unknown';
         notification.finishedAt = nowIso(this.now);

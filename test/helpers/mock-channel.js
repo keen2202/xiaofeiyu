@@ -59,6 +59,15 @@ export function makeMockChannel({ sendStatus = 'sent', queryStatus = 'sent' } = 
     async send(context, notification) {
       calls.send.push({ context, notification });
       if (sendStatus === 'unknown') throw new Error('timeout');
+      if (sendStatus === 'structured_not_sent') {
+        return {
+          status: 'not_sent',
+          error: {
+            code: 'DEPENDENCY_UNAVAILABLE',
+            message: 'onebot private message was not sent: EventChecker Failed: network error'
+          }
+        };
+      }
       return { status: 'sent', receipt: { platform: 'dsh-im', externalId: 'im_msg_1' } };
     },
     async queryDelivery(id, receipt) {
