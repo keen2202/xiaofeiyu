@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-11-10T13:39:49.742Z",
+  "dataDir": "C:\\Users\\22338\\.dsh\\dsh-bili-unified",
+  "recipientMid": "508187015",
+  "textHashInputLength": 5,
+  "backup": {
+    "backupId": "backup_2aff9a1b172148d29240c81743da421c",
+    "kind": "ledger",
+    "cutAt": "2026-11-10T13:39:29.875Z",
+    "protection": "protected",
+    "protectionReason": null,
+    "protectionAgeMs": 11763,
+    "failureDomain": "same-physical-disk:D (NVMe Disk0; NOT independent)",
+    "verifiedBy": "白阑王"
+  },
+  "task": {
+    "taskId": "task_f6ad8b41f0744c5f881eb746521ba576",
+    "kind": "dm",
+    "status": "succeeded",
+    "revision": 1,
+    "attempts": 0,
+    "createdAt": "2026-11-10T13:39:49.168Z",
+    "result": {
+      "recipientMid": "508187015",
+      "textHash": "jcs-sha256-v1:5aa762ae383fbb727af3c7a36d4940a5b8c40a989452d2304fc958ff3f354e7a",
+      "receipt": {
+        "externalId": "7706537081688760000",
+        "url": null,
+        "verification": "platform_readback"
+      },
+      "contentRef": null
+    }
+  },
+  "account": {
+    "accountRef": {
+      "platform": "bilibili",
+      "accountId": "3546827282450731"
+    },
+    "mid": "3546827282450731",
+    "uname": "白阑王",
+    "credentialRevision": "ba499e820b42557033e0b0c85c76e374fd556aa55087bacb3a0b0c8529baabcf",
+    "devId": "5999A0F6-32DD-4E7B-8C7D-3F2D2BFFA2D3",
+    "boundAt": "2026-11-10T11:47:57.675Z",
+    "lastVerifiedAt": "2026-11-10T13:39:15.019Z",
+    "verifiedFrom": "whoami"
+  }
+}

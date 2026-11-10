@@ -240,3 +240,13 @@ node scripts/acceptance/real-dm.mjs --to 508187015 --text "hello" --dest "D:\dsh
 
 脚本会依次要求 4 次一次性挑战短语（backup policy → backup create → config update → dm --go），
 完成后把输出与 `.dsh-probe/acceptance/real-dm-evidence-*.json` 发给维护者归档。
+
+### 2026-11-10 结果：真实 DM 写入成功 ✅
+
+- 恢复点 `backup_2aff9a1b172148d29240c81743da421c`（protected，age 11.8s，故障域 "same-physical-disk:D (NOT independent)" 已如实记录）；
+- `task_f6ad8b41f0744c5f881eb746521ba576` → **succeeded**；`op_d2f63521d5e1470da2c8e125403003bf` → **confirmed**；
+- 回执：`externalId=7706537081688760000`，`verification=platform_readback`；
+- 独立平台只读回读（`svr_sync/fetch_session_msgs`）确认：2026-11-10T13:39:49Z 由本账号 3546827282450731 向 508187015 发出 `hello`；
+- 证据：`report/REAL_DM_ACCEPTANCE_2026-11-10.md` + `report/real-dm-evidence-1794317989745.json`；
+- 前两次尝试（读时间槽门禁、`send_msg` 参数/设备号问题）均为 `not_sent` 并已修复，见 `report/DM_UNKNOWN_OP_EVIDENCE_2026-11-10.md`；
+- 限制：仅单条 DM；备份与 C: 同盘（非独立故障域）；评论/External/Bundle 与恢复演练仍未实测。建议验收后轮换 B 站 Cookie。

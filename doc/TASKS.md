@@ -485,7 +485,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 #### T12.2：真实 B 站/External 发布验收（可选授权）【BLOCKED】
 
-**实现状态（2026-11-10，保持 BLOCKED）**：真实数据目录已初始化、B 站凭据未绑定、无恢复点；真实 DM 验收命令链（`account verify → backup policy/create → config update → dm --go`）已整理为 TTY 交接清单，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。缺 B 站凭据、独立故障域（当前单盘）与 owner 确认的目标 mid/文本，未执行任何真实写入。
+**实现状态（2026-11-10，DM 单动作已真实验收，整体仍 BLOCKED）**：owner 在真实 TTY 中按 `scripts/acceptance/real-dm.mjs` 完成 1 条白名单私信真实写入：收件人 508187015、文本 `hello`、保护点 `backup_2aff9a1b172148d29240c81743da421c`（protected，age 11.8s）、task `task_f6ad8b41f0744c5f881eb746521ba576` succeeded、operation `op_d2f63521d5e1470da2c8e125403003bf` confirmed、receipt `externalId=7706537081688760000 verification=platform_readback`，并用只读 `svr_sync/fetch_session_msgs` 回读确认平台存在该条消息（2026-11-10T13:39:49Z，sender=3546827282450731）。过程中还修复了 DM preflight/dispatch 重复读、`send_msg` 的 UUID `dev_id`/`sender_uid`、平台拒绝码 not_sent 归类与写配额归还（详见 `report/DM_UNKNOWN_OP_EVIDENCE_2026-11-10.md`）。评论、External 投稿、Manual Bundle 发布仍未实测；备份目标与 C: 同盘（非独立故障域），恢复演练未做，故 T12.2 其余部分保持 **BLOCKED**。
 
 **依赖**：T11、T03、T09；另需用户明确授权账号、内容、动作、额度和发布器执行范围。
 
