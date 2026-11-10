@@ -358,6 +358,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 ### T20：可信恢复点、分层备份与保护健康【PENDING】
 
+**实现状态（2026-11-10，保持 PENDING）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。真实数据目录 `C:\Users\22338\.dsh\dsh-bili-unified` 已初始化，但 `backup.status=unprotected/policy_not_configured`；本机仅一块物理 NVMe 盘（C:/D: 同盘），无法提供独立故障域，真实策略/恢复点与 owner 确认仍需在 TTY 中完成，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。
+
 **依赖**：T02、T14、T15。
 
 **目标文件**：`src/backup-recovery.js`、`src/store.js`、`src/artifact-store.js`、`src/contracts.js`；`test/backup.test.js`、`test/backup-retention.test.js`、`test/backup-fence.test.js`、`test/backup-policy.test.js`。`<dataDir>/backup-policy.json`仅为获批后的本地策略对象，当前不创建、不写入普通示例配置。
@@ -476,6 +478,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 **验收**：FR-IM-008。必须有真实入站、人类来源、原 Task 决策和授权状态回信证据；审批 fail-closed 的负例也留证。无授权不发消息，标未实测；无宿主/人类证明标 BLOCKED。契约 Mock、只读探测、HTTP 自造 envelope 都不能替代本项，未通过不得称真实 IM 全功能完成。
 
 #### T12.2：真实 B 站/External 发布验收（可选授权）【BLOCKED】
+
+**实现状态（2026-11-10，保持 BLOCKED）**：真实数据目录已初始化、B 站凭据未绑定、无恢复点；真实 DM 验收命令链（`account verify → backup policy/create → config update → dm --go`）已整理为 TTY 交接清单，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。缺 B 站凭据、独立故障域（当前单盘）与 owner 确认的目标 mid/文本，未执行任何真实写入。
 
 **依赖**：T11、T03、T09；另需用户明确授权账号、内容、动作、额度和发布器执行范围。
 

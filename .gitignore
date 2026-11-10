@@ -26,3 +26,4 @@ Thumbs.db
 .dsh-probe/grep-cordis.mjs
 .dsh-probe/extract-cordis.mjs
 .dsh-probe/im-onebot-*/
+.dsh-probe/backup-smoke.mjs
