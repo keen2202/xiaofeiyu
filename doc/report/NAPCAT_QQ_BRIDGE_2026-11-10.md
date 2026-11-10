@@ -66,10 +66,14 @@ WebUI 仅监听 `127.0.0.1:6099`（`host` 已从 `::` 改为回环）。OneBot t
 | 插件只读探测 | `node cli.mjs im probe --config .dsh-probe/napcat-onebot.config.json` | `ok=true`，`status=available`，`humanIdentity=unverified`，`delivery.query=false`，bot=275748387 |
 | 好友关系 | `get_friend_list` | `2233843382`（挽歌）在列 |
 | 出站（平台直发自检） | `send_private_msg {user_id:2233843382}` | `retcode=0`，`message_id=192271706` |
+| **真实入站事件** | `node cli.mjs im listen --seconds 1800`，owner 用 QQ 发私聊 `ping` | 收到 1 条：`eventId=msg:275841081`、`senderRef=2233843382`、`conversationId=private:2233843382`、`command=ping`、`trusted=true`、`humanAssurance=unverified`（2026-11-10T13:15:39Z） |
 
-未完成：**真实入站事件**（owner 给机器人发私聊）尚未发生；已多次开启 `im listen` 窗口（累计约
-27 分钟）均 `received: 0`，NapCat `get_recent_contact` 里也只有 bot 自己发出的那条自检消息，
-说明 owner 尚未实际发送，而不是链路故障（WS 已能收到 NapCat 事件）。
+结论：OneBot v11 的**真实入站**已打通（QQ 私聊 → NapCat → 插件事件），只读探测/身份/token/好友/出站、
+入站均有真实证据；剩余为 TTY 的 `config update` + `im bind` 接线与插件内真实回信验收。
+
+补充（2026-11-10 21:40）：机器人 QQ 的 GUI 窗口进程已消失（仅剩主进程 + gpu/network 子进程，
+无 renderer），但 NapCat 核心与 OneBot 仍在线（`get_status` online，`im probe` ok），属 headless 运行；
+owner 个人 QQ 客户端进程当时不在运行（与此前排查 NapCat 时结束 QQ 进程树的操作有关），与桥接无关。
 
 ## 5. 插件侧待执行（需真实终端 TTY）
 
