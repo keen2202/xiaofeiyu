@@ -129,3 +129,19 @@ owner 在真实 TTY 完成 `config update` + `im bind` 后，真实数据目录�
 结论：**QQ → NapCat OneBot → 插件 ImBridge → 绑定解析 → command-service 的真实入站链路已打通**。
 尚未验证：插件侧 outbound 回信（当前 `im.notifications.enabled=false`，且回信派发要过保护/额度门禁，
 需要新鲜恢复点 + 用户对首次真实 IM 发送的单独授权），以及 T12.1 的人工审批/拒绝闭环。
+## 8. 插件侧 outbound 回信（真实 QQ 消息）验证 — 2026-11-10
+
+在 `im.notifications.enabled=true` 且新鲜恢复点 `backup_0fc76b0c618f4bb0a1c141b103303fad`
+（protection=protected，age≈37s）下，owner 再次从 QQ 发送结构化命令 `{"action":"task.list","input":{}}`：
+
+- 入站：`eventId=msg:1424491180`，`accepted=true`；
+- 插件生成通知：`outbox_48db37219d1c4d41bbdff39681e378b4`，summary=`Task draft: accepted`；
+- outbox 派发：`status=sent`，`attempts=1`，`sentAt=2026-11-10T14:00:37.161Z`，
+  receipt=`{platform:"onebot-v11", externalId:"1530582498"}`，`error=null`；
+- 平台只读复核（OneBot `get_msg` + `get_recent_contact`）：`message_id=1530582498`，
+  `self_id=user_id=275748387`，`post_type=message_sent`，文本 `Task draft: accepted`，
+  会话 peer=2233843382（挽歌）。
+
+结论：**插件 → OneBot → QQ 的真实出站回信链路已打通**，回执 ID 与平台消息一致；
+保护/额度门禁在派发时通过了真实检查。至此 QQ 通道的入站、出站、绑定、配置均已用真实 QQ 消息验证。
+仍待 T12.1：IM 来源草稿 Task 的人工审批/拒绝与 task 状态回信闭环。
