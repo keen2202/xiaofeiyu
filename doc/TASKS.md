@@ -269,6 +269,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **端点核对（2026-11-10，用户提供的 QQ 地址）**：用户提供的 `https://api.bot.qq.com` / `wss://api.bot.qq.com/websocket/` 是**官方 QQ 机器人开放平台**（bot.q.qq.com）接口，不是 OneBot v11：只读探测返回 `{"message":"不支持的调用","code":11001}`（官方平台用 AppID + ClientSecret 换短期 `access_token`，事件按 `user_openid` 寻址）。曾据此短暂实现过 `im.transport=qq-official`，**已按用户 2026-11-10 决定整体删除**（保持轻量化，见 DESIGN D-15 / SPEC §22.3）：现只有 `dsh-im` 与 `onebot-v11` 两种 transport，官方端点必须经 OneBot v11 桥接（如 NapCat）转换。T16.2 仍待真实 OneBot 桥接端点后验收。
 
+**实现状态（2026-11-10，NapCat 桥接就绪，待真实入站/绑定）**：已在本机安装 NapCat 4.18.42 + 一体化 QQ Shell 9.9.33-52230（`D:\Tools\NapCat`），修复两个启动问题（`launcher.bat` 注入错目标改为自带 Shell；多进程 worker 起不来改用 `NAPCAT_DISABLE_MULTI_PROCESS=1` 单进程），机器人小号 `275748387` 已登录，OneBot v11 HTTP `127.0.0.1:3000` + WS `127.0.0.1:3001` 已配置 token 并监听。真实只读探测通过：`node cli.mjs im probe --config .dsh-probe/napcat-onebot.config.json` 返回 `ok=true / status=available / humanIdentity=unverified / delivery.query=false`，WS 已收到 NapCat `meta_event/lifecycle/connect`，`get_status`（online）、`get_login_info`（275748387）、`get_friend_list`、`send_private_msg`（自检 message_id=192271706）均成功，无 token 请求被 403 拒绝；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md`。仍缺：owner（2233843382）真实私聊入站事件、TTY `config update` + `im bind` 接线与真实回信验收（首次真实 IM 发送需用户单独授权，审批仍 fail-closed），故 T16.2 保持 **BLOCKED**。
+
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
 **目标文件**：`src/adapters/channels/dsh-im.js`、`src/adapters/channels/onebot-qq.js`（可选 OneBot v11 宿主实现）、`cli.mjs`（`im probe`/`im status`）、`scripts/acceptance/qq-setup.mjs`、`test/dsh-im-adapter.test.js`、`test/onebot-channel.test.js`；真实证据写入获批后的交付记录，不采集秘密/无关聊天正文。
