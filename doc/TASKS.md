@@ -3,7 +3,7 @@
 - 版本：**0.2.1-draft**
 - 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
 - 日期：2026-11-07（最近修订：2026-11-11）
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`；同日恢复 QQ 风控并完成 DSH 内 IM 真实入站/回信闭环（`msg:542765618` → outbox `externalId=873112629`），见 `report/DSH_IM_LIVE_2026-11-11.md`。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`；同日恢复 QQ 风控并完成 DSH 内 IM 真实入站/回信闭环（`msg:542765618` → outbox `externalId=873112629`），见 `report/DSH_IM_LIVE_2026-11-11.md`；同日完成 T12.1 approve 路径真实验收（IM 草稿 → TTY approve → 评论 `rpid=323665792720` → 3 条状态回信），并修复 Windows 跨进程 `state.json` rename 竞态（`renameWithRetry`），见 `report/T12_1_IM_APPROVE_2026-11-11.md`。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
 - 项目根目录：`D:/Workespace/xiaofeiyu`
 - 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`；2026-11-11 整改提交 `d1a6e1c`、`6ae973a`。
 - 基线：`DESIGN.md`、`SPEC.md` 的 0.2.1-draft；普通业务配置参考既有 `config.example.json`，规范验收统一对照 SPEC §19。
@@ -25,8 +25,8 @@
 | T09 | Manual/External 已实现 | 离线回归；真实投稿未验收 |
 | T10 | CLI/HTTP/宿主及调度已接线 | 本轮补能力重验 CLI；真实 DSH 挂载有历史证据，长期组合待验收 |
 | T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
-| T12.1/T16 | IM 契约与桥接已实现；DSH 内 bridge 已启动 | 2026-11-11 DSH 运行时验证：IM `started=true`、真实入站 `msg:542765618` → 只读命令 → outbox sent `externalId=873112629`（平台回读）；approve（真实效果）路径仍未验；QQ 风控恢复需 NapCat 脱离 DSH 进程树启动 |
-| T12.2 | DM 单动作 + 评论单动作业务成功 | 评论 1 条真实写入（task_ac3a25534fb34d5e9bbaaf8fc8315d84 / op_5f916581484f4550a3d6bd9c1baf645a / rpid 323659699648，平台回读）；Manual/External 仍未实测；独立保护点 backup_8e99f036090b41008ac33566d00f4a57（远程主机） |
+| T12.1/T16 | IM 契约与桥接已实现；DSH 内 bridge 已启动；approve 路径已验 | 2026-11-11：DSH 运行时真实入站 `msg:542765618` → 只读命令 → outbox `externalId=873112629`；另经 IM 创建草稿 → `task resume` 重签审批 → TTY `approve --go` → 真实评论 `rpid=323665792720`（`op_b6f79d169db9490f80b719abf90a788f` confirmed）→ 三条状态回信（65359317 / 2036901350 / 128067712）。CLI 假失败 `EPERM rename` 已修复（rename 重试）。QQ 恢复需 NapCat 脱离 DSH 进程树启动 |
+| T12.2 | DM 单动作 + 评论两次真实写入 | DM 1 条；评论 2 条真实写入（`task_ac3a…`/`op_5f91…`/rpid 323659699648；`task_5d7b…`/`op_b6f7…`/rpid 323665792720，第二条经 IM approve，均平台回读）；Manual/External 仍未实测；独立保护点 backup_8e99… / backup_d70d… |
 | T12.3 | 跨系统迁移实现已有 | Windows→Linux→Windows 合成数据交接/重启通过；测试人类证明与保护夹具，生产授权前置仍另验 |
 | T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
 | T15 | Artifact 已实现 | Linux 406 项零跳过，软/硬链接防护执行通过；Windows 系统权限不变 |
@@ -511,6 +511,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 **实现状态（2026-11-10，DONE，拒绝路径）**：真实 IM 入站 + 持久草稿 Task + 本地 TTY 人类拒绝 + outbox 真实状态回信已全链路验证：入站 `msg:1750364829`（comment.draft）→ `task_15f7069d709d408bb9b758d15b068647`（waiting_approval）→ TTY reject（`approval_9e929107db9143e2b2c01bd39a91ee2b`，decidedBy 本地 owner）→ Task failed → 两条真实回信 `externalId=790450181`（waiting_approval）/`191643848`（failed），OneBot `get_msg` 复核通过；IM 侧 approval.decide 负例被 `TRUST_UNAVAILABLE` fail-closed（无副作用）。全程无 B 站平台写入。详见 `report/T12_1_IM_APPROVAL_LOOP_2026-11-10.md`。approve 路径/真实评论写入仍属 T12.2 未实测范围。
 
 **实现状态（2026-11-11，DSH 运行时内入站/回信已验证）**：机器人 QQ 风控恢复后，以脱离 DSH 进程树的方式重启 NapCat 并扫码；DSH 重启后插件 IM bridge 成功启动（`components.im.started=true`、`receive/send=true`、`status=available`、`error=null`）。owner 在真实终端建立新鲜保护点 `backup_4a68f411ab3b4448b9e22e78cd096f1a`（cutAt `2026-11-11T14:47:24.882Z`，`protected`）后，owner QQ（2233843382）私聊机器人发送 `{"action":"task.list","input":{}}`：入站事件 `msg:542765618` accepted（2026-11-11T14:48:16.064Z），outbox `outbox_bb181cf255554a4bb9b507872ba5855f` 状态 sent（sentAt 14:48:16.971Z），回执 `externalId=873112629`；OneBot `get_msg` 平台回读确认 `post_type=message_sent`、`raw_message="Task draft: accepted"`、`self_id=275748387`。账本事件 seq 152–155（`im.command.received` → `outbox.pending/sending/sent`）。**approve（真实效果）路径仍未实测**，需要新的真实写授权；详见 `report/DSH_IM_LIVE_2026-11-11.md`。
+
+**实现状态（2026-11-11，approve 路径已真实验收）**：owner 通过 IM 创建 comment 草稿（`task_5d7bfbd57aa44e948d0330fa8bbac877`，入站 `msg:1027562544`，目标 `BV1ZAWM61Evb`）后，在真实 TTY 用 `task resume --go` 重签审批（`approval_dd98d55a4c834b10a4d7558419b80cbe`）并 `approval decide approve --nonce … --confirm --go` 派发：`op_b6f79d169db9490f80b719abf90a788f` confirmed、receipt `externalId=323665792720`、`verification=platform_readback`；task succeeded；三条状态回信（waiting_approval `65359317` / running `2036901350` / succeeded `128067712`）均由 outbox 真实发出。过程中 CLI 在业务成功后误报 `EPERM rename`（Windows 跨进程 `state.json` rename 与读者竞争），已通过 `renameWithRetry` 修复并补 `test/durable-write.test.js` 回归；未重试、未产生重复评论。详见 `report/T12_1_IM_APPROVE_2026-11-11.md`。
 
 **依赖**：T11、T16.2；另需用户对测试会话/主体/消息/回信范围的单独授权。
 
@@ -1038,4 +1040,4 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 **验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
 
-**仍未完成/未实测（2026-11-11 更新）**：T12.1 真实 approve 路径（需新的真实写/真实效果授权；入站与拒绝/回信已在 DSH 运行时验证）、T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、单条真实评论（平台回读）、DSH 内 IM bridge 真实入站+状态回信（`msg:542765618` → `externalId=873112629`）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
+**仍未完成/未实测（2026-11-11 更新）**：T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、评论两条真实写入（含 IM approve → 真实评论 `rpid=323665792720`）、DSH 内 IM bridge 真实入站+状态回信（`msg:542765618` → `externalId=873112629`）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。

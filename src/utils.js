@@ -345,6 +345,33 @@ async function syncDir(dir) {
   }
 }
 
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']);
+
+/**
+ * Rename with bounded retry for transient sharing violations. Windows rejects
+ * `MoveFileEx(REPLACE_EXISTING)` while another process has the target open
+ * (EPERM/EBUSY); cross-process readers (CLI vs. running DSH plugin) therefore
+ * race with durable atomic writes such as state.json and the journal index.
+ */
+export async function renameWithRetry(source, target, options = {}) {
+  const attempts = options.attempts ?? 6;
+  const baseDelayMs = options.baseDelayMs ?? 10;
+  const maxDelayMs = options.maxDelayMs ?? 160;
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fsp.rename(source, target);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!RENAME_RETRY_CODES.has(error?.code) || attempt === attempts - 1) throw error;
+      const delay = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt) + Math.floor(Math.random() * 10);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 export async function atomicWriteFile(file, data, options = {}) {
   const dir = path.dirname(file);
   await ensureDir(dir);
@@ -358,7 +385,7 @@ export async function atomicWriteFile(file, data, options = {}) {
     handle = undefined;
     await options.hooks?.afterTempWrite?.({ file, temp });
     await options.hooks?.beforeRename?.({ file, temp });
-    await fsp.rename(temp, file);
+    await renameWithRetry(temp, file);
     if (options.syncDir !== false) await syncDir(dir);
     await options.hooks?.afterRename?.({ file });
   } catch (error) {

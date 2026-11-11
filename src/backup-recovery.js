@@ -27,6 +27,7 @@ import {
   processStartIso,
   randomId,
   randomToken,
+  renameWithRetry,
   resolveInside,
   sha256Hex
 } from './utils.js';
@@ -445,7 +446,7 @@ export class BackupService {
     if (alive && !pidReused) return false;
     const staleName = `${lockFile}.stale.${process.pid}.${randomToken(4)}`;
     try {
-      await fsp.rename(lockFile, staleName);
+      await renameWithRetry(lockFile, staleName);
     } catch {
       return false;
     }
@@ -861,7 +862,7 @@ export class BackupService {
       });
       await this.hooks.beforeBackupPublish?.({ backupId, tmpDir, finalDir });
       await ensureDir(root);
-      await fsp.rename(tmpDir, finalDir);
+      await renameWithRetry(tmpDir, finalDir);
       const verified = await verifyBackupDirectory(finalDir, { now: this.now });
       const indexEntry = {
         backupId,

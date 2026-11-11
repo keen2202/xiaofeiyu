@@ -17,6 +17,7 @@ import {
   processStartIso,
   randomId,
   randomToken,
+  renameWithRetry,
   sleep
 } from './utils.js';
 
@@ -631,7 +632,7 @@ export class JsonStore {
     // release the fresh lock created by this process.
     const staleName = `${lockFile}.stale.${process.pid}.${randomToken(4)}`;
     try {
-      await fsp.rename(lockFile, staleName);
+      await renameWithRetry(lockFile, staleName);
       await fsp.rm(staleName, { force: true });
       return true;
     } catch (error) {
