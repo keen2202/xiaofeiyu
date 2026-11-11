@@ -32,6 +32,7 @@ if (-not $ip) { throw 'cannot resolve WSL IP' }
 $share = "\\$ip\dsh-bili-backups"
 $passFile = Join-Path $PSScriptRoot 'smb-pass.txt'
 $pw = (Get-Content $passFile -Raw).Trim()
+& cmd.exe /c "net use `"$share`" /delete /y" 2>$null | Out-Null
 & cmd.exe /c "net use `"$share`" /user:bili $pw /persistent:no" 2>$null | Out-Null
 if (Test-Path $share) {
   Write-Host "  mapped: $share"

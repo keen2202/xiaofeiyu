@@ -20,6 +20,8 @@ Thumbs.db
 # extracted ASAR sources, logs and raw results stay machine-local)
 .dsh-probe-home/
 .dsh-probe/dsh-src/
+.dsh-probe/dsh-app-boot-index.js
+.dsh-probe/*.png
 .dsh-probe/*.json
 .dsh-probe/*.txt
 .dsh-probe/debug.mjs

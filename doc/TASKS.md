@@ -3,7 +3,7 @@
 - 版本：**0.2.1-draft**
 - 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
 - 日期：2026-11-07（最近修订：2026-11-11）
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`；同日恢复 QQ 风控并完成 DSH 内 IM 真实入站/回信闭环（`msg:542765618` → outbox `externalId=873112629`），见 `report/DSH_IM_LIVE_2026-11-11.md`。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
 - 项目根目录：`D:/Workespace/xiaofeiyu`
 - 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`；2026-11-11 整改提交 `d1a6e1c`、`6ae973a`。
 - 基线：`DESIGN.md`、`SPEC.md` 的 0.2.1-draft；普通业务配置参考既有 `config.example.json`，规范验收统一对照 SPEC §19。
@@ -25,7 +25,7 @@
 | T09 | Manual/External 已实现 | 离线回归；真实投稿未验收 |
 | T10 | CLI/HTTP/宿主及调度已接线 | 本轮补能力重验 CLI；真实 DSH 挂载有历史证据，长期组合待验收 |
 | T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
-| T12.1/T16 | IM 契约与桥接已实现 | 11-10 真实入站→本地人类拒绝→回信已有证据；approve 路径、DSH 内组合、独立故障域保护仍待验收；机器人 QQ 自 2026-11-10 起受腾讯风控下线（外部） |
+| T12.1/T16 | IM 契约与桥接已实现；DSH 内 bridge 已启动 | 2026-11-11 DSH 运行时验证：IM `started=true`、真实入站 `msg:542765618` → 只读命令 → outbox sent `externalId=873112629`（平台回读）；approve（真实效果）路径仍未验；QQ 风控恢复需 NapCat 脱离 DSH 进程树启动 |
 | T12.2 | DM 单动作 + 评论单动作业务成功 | 评论 1 条真实写入（task_ac3a25534fb34d5e9bbaaf8fc8315d84 / op_5f916581484f4550a3d6bd9c1baf645a / rpid 323659699648，平台回读）；Manual/External 仍未实测；独立保护点 backup_8e99f036090b41008ac33566d00f4a57（远程主机） |
 | T12.3 | 跨系统迁移实现已有 | Windows→Linux→Windows 合成数据交接/重启通过；测试人类证明与保护夹具，生产授权前置仍另验 |
 | T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
@@ -300,6 +300,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **实现状态（2026-11-10，真实宿主入站/出站已验证，T16.2 DONE）**：已在本机安装 NapCat 4.18.42 + 一体化 QQ Shell 9.9.33-52230（`D:\Tools\NapCat`），修复两个启动问题（`launcher.bat` 注入错目标改为自带 Shell；多进程 worker 起不来改用 `NAPCAT_DISABLE_MULTI_PROCESS=1` 单进程），机器人小号 `275748387` 已登录，OneBot v11 HTTP `127.0.0.1:3000` + WS `127.0.0.1:3001` 已配置 token 并监听。真实只读探测通过：`node cli.mjs im probe --config .dsh-probe/napcat-onebot.config.json` 返回 `ok=true / status=available / humanIdentity=unverified / delivery.query=false`，WS 已收到 NapCat `meta_event/lifecycle/connect`，`get_status`（online）、`get_login_info`（275748387）、`get_friend_list`、`send_private_msg`（自检 message_id=192271706）均成功，无 token 请求被 403 拒绝；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md`。**真实入站 + 插件接线已完成**：owner（2233843382）用 QQ 发私聊先由 `im listen` 抓到 `ping`（eventId msg:275841081，2026-11-10T13:15:39Z）；随后 owner 在真实 TTY 完成 `config update` + `im bind`（binding_4ad9d6b3437a4c9ab0b065f0f0c0c57c），运行时 ImBridge `started=true`、capabilities available（receive/send），结构化命令 `{"action":"task.list","input":{}}`（eventId msg:1776327543）在插件侧 `accepted=true` 并落库 `inboxKeys[...] status=accepted`（executionMode=dry），账本含 `im.binding.created` / `im.command.received`；见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md` §7。**插件侧 outbound 回信已验证**：开启 `im.notifications.enabled` 并建立新鲜保护点（`backup_0fc76b0c618f4bb0a1c141b103303fad`，protected）后，再次入站命令生成通知 `outbox_48db37219d1c4d41bbdff39681e378b4`，outbox `status=sent`、receipt `{platform:"onebot-v11", externalId:"1530582498"}`；平台 `get_msg` 只读复核 message_id=1530582498、文本 `Task draft: accepted`、peer=2233843382（见 `report/NAPCAT_QQ_BRIDGE_2026-11-10.md` §8）。T16.2 的只读探测 + 真实入站/出站验收完成；IM 来源草稿 Task 的人工审批/拒绝闭环仍归 T12.1（单独授权项）。 **DSH 桌面挂载（2026-11-10）**：插件已挂载进真实 DSH desktop profile 并验证（bundle installed/enabled、9 个 `bili_unified_*` 工具、`bili_unified_status` 实调成功、HTTP 路由 401 admission、账本复用）；见 `report/DSH_DESKTOP_MOUNT_2026-11-10.md`。DSH 内 IM bridge 需要“NapCat 先在线 → 再启动 DSH”，本次因机器人 QQ 遭腾讯风控下线（外部条件）未启动（fail-closed），不影响 T16.2 的 OneBot 独立验收结论。
 
+**实现状态（2026-11-11，DSH 运行时内 bridge 已启动并真实收/回）**：QQ 风控恢复后（用户官方客户端恢复 + NapCat 扫码），以 **脱离 DSH 进程树** 的方式重启 NapCat（Explorer ShellExecute 启动 `launcher-shell.bat`，否则 DSH 退出会连带杀掉 NapCat）；随后重启 DSH，插件 `components.im` 变为 `started=true / status=available / receive+send=true / error=null`，description `onebot-v11 qq 275748387`。owner QQ 发 `{"action":"task.list","input":{}}` → 入站 `msg:542765618` accepted → outbox `outbox_bb181cf255554a4bb9b507872ba5855f` sent（`externalId=873112629`）→ OneBot `get_msg` 回读通过。此前“DSH 内组合未启动”的外部阻塞已解除；剩余风险为 QQ 风控复发与 OneBot 无发送查询能力。详见 `report/DSH_IM_LIVE_2026-11-11.md`。
+
 **依赖**：T16.1；另需可访问的真实宿主及允许的只读观察条件。
 
 **目标文件**：`src/adapters/channels/dsh-im.js`、`src/adapters/channels/onebot-qq.js`（可选 OneBot v11 宿主实现）、`cli.mjs`（`im probe`/`im status`）、`scripts/acceptance/qq-setup.mjs`、`test/dsh-im-adapter.test.js`、`test/onebot-channel.test.js`；真实证据写入获批后的交付记录，不采集秘密/无关聊天正文。
@@ -507,6 +509,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 #### T12.1：真实 IM 入站、人工审批/拒绝与回信【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，DONE，拒绝路径）**：真实 IM 入站 + 持久草稿 Task + 本地 TTY 人类拒绝 + outbox 真实状态回信已全链路验证：入站 `msg:1750364829`（comment.draft）→ `task_15f7069d709d408bb9b758d15b068647`（waiting_approval）→ TTY reject（`approval_9e929107db9143e2b2c01bd39a91ee2b`，decidedBy 本地 owner）→ Task failed → 两条真实回信 `externalId=790450181`（waiting_approval）/`191643848`（failed），OneBot `get_msg` 复核通过；IM 侧 approval.decide 负例被 `TRUST_UNAVAILABLE` fail-closed（无副作用）。全程无 B 站平台写入。详见 `report/T12_1_IM_APPROVAL_LOOP_2026-11-10.md`。approve 路径/真实评论写入仍属 T12.2 未实测范围。
+
+**实现状态（2026-11-11，DSH 运行时内入站/回信已验证）**：机器人 QQ 风控恢复后，以脱离 DSH 进程树的方式重启 NapCat 并扫码；DSH 重启后插件 IM bridge 成功启动（`components.im.started=true`、`receive/send=true`、`status=available`、`error=null`）。owner 在真实终端建立新鲜保护点 `backup_4a68f411ab3b4448b9e22e78cd096f1a`（cutAt `2026-11-11T14:47:24.882Z`，`protected`）后，owner QQ（2233843382）私聊机器人发送 `{"action":"task.list","input":{}}`：入站事件 `msg:542765618` accepted（2026-11-11T14:48:16.064Z），outbox `outbox_bb181cf255554a4bb9b507872ba5855f` 状态 sent（sentAt 14:48:16.971Z），回执 `externalId=873112629`；OneBot `get_msg` 平台回读确认 `post_type=message_sent`、`raw_message="Task draft: accepted"`、`self_id=275748387`。账本事件 seq 152–155（`im.command.received` → `outbox.pending/sending/sent`）。**approve（真实效果）路径仍未实测**，需要新的真实写授权；详见 `report/DSH_IM_LIVE_2026-11-11.md`。
 
 **依赖**：T11、T16.2；另需用户对测试会话/主体/消息/回信范围的单独授权。
 
@@ -1034,4 +1038,4 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 **验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
 
-**仍未完成/未实测（2026-11-11 更新）**：T12.1 approve 路径与 DSH 内 IM 持续组合（机器人 QQ 受腾讯风控离线）、T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、单条真实评论（平台回读）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
+**仍未完成/未实测（2026-11-11 更新）**：T12.1 真实 approve 路径（需新的真实写/真实效果授权；入站与拒绝/回信已在 DSH 运行时验证）、T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、单条真实评论（平台回读）、DSH 内 IM bridge 真实入站+状态回信（`msg:542765618` → `externalId=873112629`）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
