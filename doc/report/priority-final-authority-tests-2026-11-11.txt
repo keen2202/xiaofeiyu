@@ -1,0 +1,45 @@
+✔ audit: revocation after approval blocks a new reservation without a platform call (1365.4561ms)
+✔ audit: scope removal after reservation blocks dispatch and retains the reservation (1962.0793ms)
+✔ audit: revoking an IM binding invalidates its existing approved task (1444.0447ms)
+✔ audit: same/unknown failure domain allows backup but cannot protect dispatch; policy changes invalidate protection (3654.6115ms)
+✔ audit: fresh ledger does not hide a stale full recovery point (3542.3772ms)
+✔ audit: host priorities survive file updates and restart (827.2699ms)
+✔ audit: popular/search/detail/subtitle reads wait unlocked and a cold WBI cache respects circuit and auth pause (3269.9593ms)
+✔ audit: scheduler has a stable service identity without human/admin scopes (682.0874ms)
+✔ audit: revoking the deciding IM binding blocks a locally created approved task (432.4114ms)
+✔ audit: staged config recovery preserves host restrictions and does not persist them into the file layer (214.2443ms)
+✔ audit: runtime capability verification rejects unbound dependencies and mismatched accounts without grants (164.8668ms)
+✔ HTTP mode contract requires explicit mode for writes and defaults browse to dry (850.8477ms)
+✔ HTTP body accepts JSON strings and enforces the 1MiB limit (495.0322ms)
+✔ HTTP /comments/approve only converts comment approvals (1298.6296ms)
+✔ comments draft entry no longer forwards caller platformData to the module (1165.9135ms)
+✔ task detail projection hides internal delivery pointers and redacts input (596.1647ms)
+✔ tool calls require explicit mode for write-capable tools (299.9374ms)
+✔ plugin apply consumes mount enabled and httpPrefix (4.9596ms)
+✔ plugin apply mounts with host trust, unregisters on dispose and tolerates lifecycle path (423.5749ms)
+✔ plugin apply fails closed without host trust service and accepts host requestRejection (458.4683ms)
+✔ index avoids static imports of optional IM/migration modules (12.4664ms)
+✔ status reports optional component state and startup failures (1232.4804ms)
+✔ config refresh restarts coordinator timer and maintenance (1685.5196ms)
+✔ maintenance runs store.prune every 30 ticks (1598.1231ms)
+✔ CLI status stays read-only across runs and reports components (859.8693ms)
+✔ CLI write commands dispatch through CommandService with sourceKind cli (80.336ms)
+✔ CLI human proof shows bound content and fails closed without a TTY (15.6872ms)
+✔ CLI enforces --confirm and rejects --go as a migration import confirmation (48.0906ms)
+✔ CLI approval go path dispatches approval.decide with trusted human context (26.499ms)
+✔ CLI new management commands call owner interfaces or report waiting dependency (17.8014ms)
+✔ CLI recovery preserve snapshots a corrupt source through the recovery service (219.1554ms)
+✔ IM pump timer drives pending notification delivery without manual pump (2184.4333ms)
+✔ IM approval chain uses the real CommandService and executes the original task once (2005.5071ms)
+✔ HTTP error handler maps representative stable codes and hides unknown management routes (503.2265ms)
+✔ status exposes credential binding without secret material (231.5593ms)
+✔ error message sanitization redacts secret shapes and local paths (1.2817ms)
+✔ projectTask allow-list omits internal pointers even when present (1.1962ms)
+ℹ tests 37
+ℹ suites 0
+ℹ pass 37
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 19171.5397

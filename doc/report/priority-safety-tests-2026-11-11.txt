@@ -1,0 +1,19 @@
+✔ audit: revocation after approval blocks a new reservation without a platform call (571.0173ms)
+✔ audit: scope removal after reservation blocks dispatch and retains the reservation (487.9291ms)
+✔ audit: revoking an IM binding invalidates its existing approved task (357.4994ms)
+✔ audit: same/unknown failure domain allows backup but cannot protect dispatch; policy changes invalidate protection (1320.9354ms)
+✔ audit: fresh ledger does not hide a stale full recovery point (786.2919ms)
+✔ audit: host priorities survive file updates and restart (318.1695ms)
+✔ audit: popular/search/detail/subtitle reads wait unlocked and a cold WBI cache respects circuit and auth pause (1100.6846ms)
+✔ audit: scheduler has a stable service identity without human/admin scopes (257.0114ms)
+✔ audit: revoking the deciding IM binding blocks a locally created approved task (548.8547ms)
+✔ audit: staged config recovery preserves host restrictions and does not persist them into the file layer (240.637ms)
+✔ audit: runtime capability verification rejects unbound dependencies and mismatched accounts without grants (137.2161ms)
+ℹ tests 11
+ℹ suites 0
+ℹ pass 11
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7007.675

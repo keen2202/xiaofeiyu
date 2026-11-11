@@ -1,0 +1,97 @@
+{
+  "configPrecedence": {
+    "expected": {
+      "dryRun": true,
+      "perRound": 7
+    },
+    "actual": {
+      "dryRun": false,
+      "perRound": 2
+    }
+  },
+  "sameDiskProtection": {
+    "status": "protected",
+    "backupId": "backup_c4cb2ff3b2974604bf5c2e2851848874",
+    "kind": "ledger",
+    "cutAt": "2026-11-07T00:00:00.000Z",
+    "ageMs": 0,
+    "tier": "ledger",
+    "mediaCoverage": {
+      "mode": "ledger",
+      "included": [],
+      "missing": [],
+      "rebuildable": [],
+      "complete": false
+    },
+    "mediaUnprotected": true,
+    "mediaUnprotectedReason": "no_verified_full_recovery_point",
+    "latestFullBackupId": null,
+    "latestFullCutAt": null
+  },
+  "staleFullCoverage": {
+    "fullAgeHours": 25,
+    "status": "protected",
+    "backupId": "backup_0529a761459f4fbe86e9107f3f839f9b",
+    "kind": "ledger",
+    "cutAt": "2026-11-08T01:00:00.000Z",
+    "ageMs": 0,
+    "tier": "ledger",
+    "mediaCoverage": {
+      "mode": "ledger",
+      "included": [],
+      "missing": [],
+      "rebuildable": [
+        "journalPending"
+      ],
+      "complete": false
+    },
+    "mediaUnprotected": false,
+    "mediaUnprotectedReason": null,
+    "latestFullBackupId": "backup_92fe296eb0c04a79a8371dba429ca83a",
+    "latestFullCutAt": "2026-11-07T00:00:00.000Z"
+  },
+  "multiSourceRead": {
+    "code": "RATE_LIMITED",
+    "message": "read time slot is not available yet"
+  },
+  "detailThenSubtitle": {
+    "subtitle": null,
+    "subtitleError": {
+      "code": "RATE_LIMITED"
+    }
+  },
+  "coldWbiDuringCircuit": {
+    "code": "RATE_LIMITED",
+    "networkCallsDespiteCircuit": [
+      "https://api.bilibili.com/x/web-interface/nav"
+    ]
+  },
+  "mockReadUrls": [
+    "https://api.bilibili.com/x/web-interface/popular",
+    "https://api.bilibili.com/x/web-interface/nav",
+    "https://api.bilibili.com/x/web-interface/wbi/view",
+    "https://api.bilibili.com/x/web-interface/nav"
+  ],
+  "approvedThenRevoked": {
+    "mockWrites": 1,
+    "operationStatus": "confirmed"
+  },
+  "schedulerPrincipal": {
+    "kind": "human",
+    "sourceKind": "local_cli",
+    "role": "owner",
+    "scopes": [
+      "*"
+    ]
+  },
+  "configSchemaDrift": {
+    "implementationExtraImKeys": [
+      "transport",
+      "onebot"
+    ],
+    "exampleExtraImKeys": [
+      "transport",
+      "onebot"
+    ]
+  }
+}

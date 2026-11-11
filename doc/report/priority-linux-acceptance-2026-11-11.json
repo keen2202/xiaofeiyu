@@ -1,0 +1,316 @@
+{
+  "recordedAt": "2026-11-11T12:33:03.501Z",
+  "baseline": "0cfb4ae + working tree",
+  "environment": {
+    "windowsNode": "v24.18.0",
+    "linuxNode": "v24.14.0",
+    "linuxCompatibilityNode": "v22.23.4",
+    "mediaTools": "6.1.1-3ubuntu5",
+    "existingEnvironment": "root sudo -i authorized by user; HOME/TEMP and environment isolated for child tests",
+    "linuxWorkspace": "/home/ubuntu/xiaofeiyu-acceptance-sx58lukl"
+  },
+  "sourceArchiveSha256": "06318e80f1abb2ff968293eb572292bff118cffadbd531604f3a7263cd4e3f2e",
+  "node22ArchiveSha256": "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce",
+  "sourceScripts": {
+    "cross-os-migration.acceptance.mjs": "a1d9f2ca5cdbdc78124f65d5ba45ec8906a080d319dfa682a92d7d16f86cfa1a",
+    "cross-os-backup.acceptance.mjs": "4dcfbbc17de07759d08d002dfe61ac8cfe5f4f1147d9f8a98912fafd2af11171"
+  },
+  "linuxTests": {
+    "node24": {
+      "tests": 406,
+      "passed": 406,
+      "failed": 0,
+      "skipped": 0
+    },
+    "node22": {
+      "tests": 406,
+      "passed": 406,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "syntax": {
+    "checkedFiles": 111,
+    "passed": true
+  },
+  "media": {
+    "kind": "t17.3-local-production-acceptance",
+    "executedAt": "2026-11-11T12:04:21.362Z",
+    "note": "real ffmpeg/ffprobe execution; injected test-human approval context",
+    "tools": {
+      "ffmpeg": {
+        "path": "/usr/bin/ffmpeg",
+        "version": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers"
+      },
+      "ffprobe": {
+        "path": "/usr/bin/ffprobe",
+        "version": "ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers"
+      }
+    },
+    "cases": [
+      {
+        "name": "images-clip-audio-subtitle",
+        "taskId": "task_98b6f3464356440fa245df28f9d52ade",
+        "status": "succeeded",
+        "readyForPublish": true,
+        "stages": [
+          {
+            "stage": "script",
+            "status": "succeeded"
+          },
+          {
+            "stage": "assets",
+            "status": "succeeded"
+          },
+          {
+            "stage": "voice",
+            "status": "succeeded"
+          },
+          {
+            "stage": "render",
+            "status": "succeeded"
+          },
+          {
+            "stage": "validate",
+            "status": "succeeded"
+          }
+        ],
+        "video": {
+          "artifactId": "artifact_da1e115d82b743d4a37e40d2f0a53260",
+          "sha256": "0c4c36d4425040738ee10d36e605433bc6f8957d6002561e2abbbcb6ec442ffc",
+          "sizeBytes": 49219
+        },
+        "cover": {
+          "artifactId": "artifact_2a689d081dd84eb881ad0c8ea1d2482d",
+          "sha256": "52199bdd1e09137ec6a723430c2e5323d9d1e29447cfa72c60ca59e440b4f737",
+          "sizeBytes": 1604
+        },
+        "media": {
+          "width": 640,
+          "height": 360,
+          "fps": 25,
+          "duration": 3.5,
+          "videoCodec": "h264",
+          "hasAudio": true,
+          "hasSubtitle": true,
+          "sizeBytes": 49219,
+          "cover": {
+            "width": 640,
+            "height": 360
+          }
+        },
+        "voiceEvidence": null
+      },
+      {
+        "name": "images-silent-legitimate-skip",
+        "taskId": "task_d286cb5253864f1eb20461acf6312daa",
+        "status": "succeeded",
+        "readyForPublish": true,
+        "stages": [
+          {
+            "stage": "script",
+            "status": "succeeded"
+          },
+          {
+            "stage": "assets",
+            "status": "succeeded"
+          },
+          {
+            "stage": "voice",
+            "status": "skipped"
+          },
+          {
+            "stage": "render",
+            "status": "succeeded"
+          },
+          {
+            "stage": "validate",
+            "status": "succeeded"
+          }
+        ],
+        "video": {
+          "artifactId": "artifact_7321ea3d093e4148be8a49a475e60e21",
+          "sha256": "f944a01c5d45a4a7bd1c391d5efc35877eaf7bd77db28609dfde1e55755ac779",
+          "sizeBytes": 3536
+        },
+        "cover": {
+          "artifactId": "artifact_f1698db2f7994f7299ad8148e1c245dc",
+          "sha256": "991e6aa6abd32645c46c9cc956a45dd2fffd6d2ed30bd5120da735ddb1375c45",
+          "sizeBytes": 989
+        },
+        "media": {
+          "width": 480,
+          "height": 270,
+          "fps": 20,
+          "duration": 3,
+          "videoCodec": "h264",
+          "hasAudio": false,
+          "hasSubtitle": false,
+          "sizeBytes": 3536,
+          "cover": {
+            "width": 480,
+            "height": 270
+          }
+        },
+        "voiceEvidence": {
+          "reason": "no_audio_provided",
+          "profileVoiceMode": "optional",
+          "allowed": true
+        }
+      }
+    ],
+    "missingToolBlocked": true,
+    "passed": true
+  },
+  "migration": {
+    "source": {
+      "phase": "source",
+      "platform": "win32",
+      "os": "10.0.26200",
+      "node": "v24.18.0",
+      "executedAt": "2026-11-11T12:00:35.508Z",
+      "proof": "synthetic data; test-human verifier and injected backup protection; no platform calls",
+      "checks": [
+        "export released; source instance retired",
+        "approved but undispatched task and artifact captured"
+      ],
+      "transfer": "D:\\Workespace\\xiaofeiyu\\.audit-tmp\\linux-acceptance-20261111\\win-source\\transfer",
+      "sourceDataDir": "D:\\Workespace\\xiaofeiyu\\.audit-tmp\\linux-acceptance-20261111\\win-source\\tmp\\xfy-test-hBOuvh",
+      "passed": true
+    },
+    "target": {
+      "phase": "target",
+      "platform": "linux",
+      "os": "6.8.0-71-generic",
+      "node": "v24.14.0",
+      "executedAt": "2026-11-11T12:04:25.166Z",
+      "proof": "synthetic data; test-human verifier and injected backup protection; no platform calls",
+      "checks": [
+        "identity/epoch/account/permanent keys/artifact digest preserved",
+        "old approval unusable; task hold retained; unverified platform denied",
+        "target restart retains its single active instance",
+        "export released; source instance retired"
+      ],
+      "targetDataDir": "/home/ubuntu/xiaofeiyu-acceptance-sx58lukl/linux-target/data",
+      "transfer": "/home/ubuntu/xiaofeiyu-acceptance-sx58lukl/linux-target/transfer",
+      "passed": true
+    },
+    "return": {
+      "phase": "return",
+      "platform": "win32",
+      "os": "10.0.26200",
+      "node": "v24.18.0",
+      "executedAt": "2026-11-11T12:06:45.836Z",
+      "proof": "synthetic data; test-human verifier and injected backup protection; no platform calls",
+      "checks": [
+        "identity/epoch/account/permanent keys/artifact digest preserved",
+        "old approval unusable; task hold retained; unverified platform denied",
+        "target restart retains its single active instance",
+        "round trip returned to original OS; original source remains retired"
+      ],
+      "targetDataDir": "D:\\Workespace\\xiaofeiyu\\.audit-tmp\\linux-acceptance-20261111\\win-return\\data",
+      "passed": true
+    }
+  },
+  "backup": {
+    "source": {
+      "phase": "source",
+      "platform": "win32",
+      "node": "v24.18.0",
+      "executedAt": "2026-11-11T12:12:58.658Z",
+      "syntheticData": true,
+      "physicalIndependence": "not attested",
+      "humanProof": "test verifier",
+      "checks": [
+        "full created and verified; local staging remains unprotected"
+      ],
+      "backupId": "backup_fa3180dd15114f30896334687dda5063",
+      "cutAt": "2026-11-11T12:13:01.158Z",
+      "transfer": "D:\\Workespace\\xiaofeiyu\\.audit-tmp\\linux-acceptance-20261111\\backup-source\\transfer",
+      "passed": true
+    },
+    "received": {
+      "verifiedAt": "2026-11-11T12:29:54.904034+00:00",
+      "result": {
+        "backupId": "backup_fa3180dd15114f30896334687dda5063",
+        "snapshotHash": "jcs-sha256-v1:1eaf3bfa19fea182f65f1d2ce7e63e693c24644a9543d3cf7d544cac1c2b0fff"
+      },
+      "physicalIndependence": "not attested",
+      "destinationAuthorized": true
+    },
+    "fault": {
+      "phase": "fault",
+      "platform": "win32",
+      "node": "v24.18.0",
+      "executedAt": "2026-11-11T12:30:25.390Z",
+      "syntheticData": true,
+      "physicalIndependence": "not attested",
+      "humanProof": "test verifier",
+      "checks": [
+        "post-cut synthetic fact recorded; only isolated source ledger made unavailable"
+      ],
+      "fault": {
+        "lostAt": "2026-11-11T12:30:25.528Z",
+        "cutAt": "2026-11-11T12:13:01.158Z",
+        "observedCutToLossMs": 1044370,
+        "note": "synthetic source ledger preserved under a new name after offsite verification; no real account data affected"
+      },
+      "passed": true
+    },
+    "restore": {
+      "phase": "restore",
+      "platform": "linux",
+      "node": "v24.14.0",
+      "executedAt": "2026-11-11T12:31:04.113Z",
+      "syntheticData": true,
+      "physicalIndependence": "not attested",
+      "humanProof": "test verifier",
+      "checks": [
+        "full bytes/hash recovered on another OS; new epoch and readonly hold retained",
+        "post-cut synthetic fact absent rather than invented; dispatch remains denied"
+      ],
+      "readonlyRestoreMs": 38,
+      "observedCutToLossMs": 1044370,
+      "measurementScope": "single small full point; local package available to verified readonly inspection; excludes network transfer and human diagnosis; not a sustained RPO/RTO guarantee",
+      "recoveryId": "recovery_5b7e202ace5f44d4afb4e851162b7715",
+      "artifact": {
+        "artifactId": "artifact_4c27606f8b8b4000be835fe6d284ec9a",
+        "sha256": "d126d616641d42ac8b0a07ec302c9fa1ec049f86200931a0a60c8f3080284b77",
+        "sizeBytes": 68,
+        "mediaType": "image/png",
+        "role": "image",
+        "artifact": {
+          "artifactId": "artifact_4c27606f8b8b4000be835fe6d284ec9a",
+          "workspaceId": "workspace_test",
+          "sha256": "d126d616641d42ac8b0a07ec302c9fa1ec049f86200931a0a60c8f3080284b77",
+          "sizeBytes": 68,
+          "mediaType": "image/png",
+          "role": "image",
+          "relativePath": "artifact_4c27606f8b8b4000be835fe6d284ec9a/image-cover.png",
+          "originalName": "cover.png",
+          "source": {
+            "type": "external",
+            "principalId": "principal_edd4740aa3f14bd8a21dce4632dd46a9",
+            "sourceName": "cover.png",
+            "importedAt": "2026-11-11T12:13:00.803Z"
+          },
+          "visibility": "workspace",
+          "createdRevision": "epoch_test",
+          "createdAt": "2026-11-11T12:13:00.803Z"
+        }
+      },
+      "passed": true
+    }
+  },
+  "limits": [
+    "synthetic data and injected test-human proof",
+    "no real platform/IM actions",
+    "physical failure-domain independence not explicitly attested",
+    "single small readonly recovery measurement; no sustained RPO/RTO guarantee",
+    "offsite point copied with SSH; no automated SSH backup destination adapter added"
+  ],
+  "synchronizedAfterSourceArchive": {
+    "src/identity.js": "7c995d932a3eedd63ecb17802141fc1482a8d0627a34f55bc8a14aa08b746006",
+    "test/audit-fixes.test.js": "785e62f6c3734355c6becd6b33b65324109d3caaf14e031b5386a36c883d19ce"
+  }
+}

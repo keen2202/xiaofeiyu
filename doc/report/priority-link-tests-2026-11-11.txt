@@ -1,0 +1,19 @@
+✔ import hashes and copies a file without deleting the source (585.0116ms)
+▶ empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are rejected
+  ﹣ file symlink is rejected when the OS permits fixture creation (4.8383ms) # Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for file symlinks
+  ✔ hardlink is rejected when the filesystem permits fixture creation (13.6604ms)
+✔ empty allowedSourceDirs, symlinks, hardlinks, traversal and oversize are rejected (180.1926ms)
+✔ tampered bytes fail verification and cross-workspace access is denied (296.9947ms)
+✔ export uses relative paths and actual verified bytes (338.3639ms)
+✔ pending import crash is recovered by hash, not by deleting finalized data (314.6651ms)
+✔ migration verification rejects traversal, absolute paths and symlinks (114.5587ms)
+﹣ migration rejects a file symlink when the OS permits fixture creation (30.8964ms) # Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for file symlinks
+✔ unlisted extra files in a migration package are rejected (48.1341ms)
+ℹ tests 10
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 2
+ℹ todo 0
+ℹ duration_ms 2421.3014

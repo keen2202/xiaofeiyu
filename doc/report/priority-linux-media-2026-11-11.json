@@ -1,0 +1,129 @@
+{
+  "kind": "t17.3-local-production-acceptance",
+  "executedAt": "2026-11-11T12:04:21.362Z",
+  "note": "real ffmpeg/ffprobe execution; injected test-human approval context",
+  "tools": {
+    "ffmpeg": {
+      "path": "/usr/bin/ffmpeg",
+      "version": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers"
+    },
+    "ffprobe": {
+      "path": "/usr/bin/ffprobe",
+      "version": "ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers"
+    }
+  },
+  "cases": [
+    {
+      "name": "images-clip-audio-subtitle",
+      "taskId": "task_98b6f3464356440fa245df28f9d52ade",
+      "status": "succeeded",
+      "readyForPublish": true,
+      "stages": [
+        {
+          "stage": "script",
+          "status": "succeeded"
+        },
+        {
+          "stage": "assets",
+          "status": "succeeded"
+        },
+        {
+          "stage": "voice",
+          "status": "succeeded"
+        },
+        {
+          "stage": "render",
+          "status": "succeeded"
+        },
+        {
+          "stage": "validate",
+          "status": "succeeded"
+        }
+      ],
+      "video": {
+        "artifactId": "artifact_da1e115d82b743d4a37e40d2f0a53260",
+        "sha256": "0c4c36d4425040738ee10d36e605433bc6f8957d6002561e2abbbcb6ec442ffc",
+        "sizeBytes": 49219
+      },
+      "cover": {
+        "artifactId": "artifact_2a689d081dd84eb881ad0c8ea1d2482d",
+        "sha256": "52199bdd1e09137ec6a723430c2e5323d9d1e29447cfa72c60ca59e440b4f737",
+        "sizeBytes": 1604
+      },
+      "media": {
+        "width": 640,
+        "height": 360,
+        "fps": 25,
+        "duration": 3.5,
+        "videoCodec": "h264",
+        "hasAudio": true,
+        "hasSubtitle": true,
+        "sizeBytes": 49219,
+        "cover": {
+          "width": 640,
+          "height": 360
+        }
+      },
+      "voiceEvidence": null
+    },
+    {
+      "name": "images-silent-legitimate-skip",
+      "taskId": "task_d286cb5253864f1eb20461acf6312daa",
+      "status": "succeeded",
+      "readyForPublish": true,
+      "stages": [
+        {
+          "stage": "script",
+          "status": "succeeded"
+        },
+        {
+          "stage": "assets",
+          "status": "succeeded"
+        },
+        {
+          "stage": "voice",
+          "status": "skipped"
+        },
+        {
+          "stage": "render",
+          "status": "succeeded"
+        },
+        {
+          "stage": "validate",
+          "status": "succeeded"
+        }
+      ],
+      "video": {
+        "artifactId": "artifact_7321ea3d093e4148be8a49a475e60e21",
+        "sha256": "f944a01c5d45a4a7bd1c391d5efc35877eaf7bd77db28609dfde1e55755ac779",
+        "sizeBytes": 3536
+      },
+      "cover": {
+        "artifactId": "artifact_f1698db2f7994f7299ad8148e1c245dc",
+        "sha256": "991e6aa6abd32645c46c9cc956a45dd2fffd6d2ed30bd5120da735ddb1375c45",
+        "sizeBytes": 989
+      },
+      "media": {
+        "width": 480,
+        "height": 270,
+        "fps": 20,
+        "duration": 3,
+        "videoCodec": "h264",
+        "hasAudio": false,
+        "hasSubtitle": false,
+        "sizeBytes": 3536,
+        "cover": {
+          "width": 480,
+          "height": 270
+        }
+      },
+      "voiceEvidence": {
+        "reason": "no_audio_provided",
+        "profileVoiceMode": "optional",
+        "allowed": true
+      }
+    }
+  ],
+  "missingToolBlocked": true,
+  "passed": true
+}

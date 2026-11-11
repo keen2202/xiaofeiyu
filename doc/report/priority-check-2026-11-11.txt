@@ -1,0 +1,5 @@
+
+> dsh-bili-unified@0.2.1 check
+> node scripts/check.mjs
+
+109 files syntax-checked; OK

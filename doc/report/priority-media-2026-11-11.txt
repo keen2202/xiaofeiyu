@@ -1,0 +1,6 @@
+{
+  "passed": false,
+  "code": null,
+  "message": "BLOCKED: required local media tool is missing: /usr/bin/ffmpeg",
+  "stack": "Error: BLOCKED: required local media tool is missing: /usr/bin/ffmpeg\n    at main (file:///D:/Workespace/xiaofeiyu/test/manual/local-production.acceptance.mjs:42:32)"
+}
