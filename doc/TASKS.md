@@ -3,7 +3,7 @@
 - 版本：**0.2.1-draft**
 - 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
 - 日期：2026-11-07（最近修订：2026-11-11）
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
 - 项目根目录：`D:/Workespace/xiaofeiyu`
 - 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`；2026-11-11 整改提交 `d1a6e1c`、`6ae973a`。
 - 基线：`DESIGN.md`、`SPEC.md` 的 0.2.1-draft；普通业务配置参考既有 `config.example.json`，规范验收统一对照 SPEC §19。
@@ -21,20 +21,20 @@
 | T02/T14 | 存储/配置/身份/副作用边界已实现，本轮修复 F01/F03/F09/F10 | 离线回归；主体撤销、绑定撤销、服务调度、配置恢复覆盖 |
 | T03/T05 | B 站读取/浏览已实现，本轮修复 F02/F04 | 真实 client+adapter+Browse 的 Mock 网络组合；非真实在线验收 |
 | T04/T08 | 可选 Agent/日记已实现 | 离线通过；商业服务未实测 |
-| T06/T07 | 评论与 DM 已实现 | 历史 DM 单条业务成功；评论未实测，DM 同盘保护不满足 FR-DR-002 |
+| T06/T07 | 评论与 DM 已实现 | DM 单条真实成功；2026-11-11 评论 1 条真实成功（平台回读确认）；DM 旧记录同盘保护不满足 FR-DR-002，新保护点已改为远程独立域 |
 | T09 | Manual/External 已实现 | 离线回归；真实投稿未验收 |
 | T10 | CLI/HTTP/宿主及调度已接线 | 本轮补能力重验 CLI；真实 DSH 挂载有历史证据，长期组合待验收 |
 | T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
 | T12.1/T16 | IM 契约与桥接已实现 | 11-10 真实入站→本地人类拒绝→回信已有证据；approve 路径、DSH 内组合、独立故障域保护仍待验收；机器人 QQ 自 2026-11-10 起受腾讯风控下线（外部） |
-| T12.2 | DM 历史单动作业务成功 | 评论/Manual/External 未实测；同盘旧 DM 记录不算满足完整灾备前置 |
+| T12.2 | DM 单动作 + 评论单动作业务成功 | 评论 1 条真实写入（task_ac3a25534fb34d5e9bbaaf8fc8315d84 / op_5f916581484f4550a3d6bd9c1baf645a / rpid 323659699648，平台回读）；Manual/External 仍未实测；独立保护点 backup_8e99f036090b41008ac33566d00f4a57（远程主机） |
 | T12.3 | 跨系统迁移实现已有 | Windows→Linux→Windows 合成数据交接/重启通过；测试人类证明与保护夹具，生产授权前置仍另验 |
 | T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
 | T15 | Artifact 已实现 | Linux 406 项零跳过，软/硬链接防护执行通过；Windows 系统权限不变 |
 | T17.1/T17.2 | 本地固定阶段执行与验证已实现 | 离线回归通过 |
 | T17.3 | 真实媒体验收脚本已有 | Linux ffmpeg/ffprobe 6.1.1 真实两组成片/封面及解码/hash 通过；使用测试 human verifier |
 | T18 | 停机迁移及业务能力重验已实现，本轮修复 F05 | 双目录 CLI/runtime、崩溃阻断、hold/新审批回归；真实双向跨 OS 数据交接通过 |
-| T20/T21 | 分层备份、只读恢复、证据解冻已实现，本轮修复 F01/F06 | 离线故障注入；物理独立性必须 owner 实核 |
-| T22 | 隔离灾备组合测试已有 | 跨机 full 只读恢复通过（38ms/小样本，cut 到故障 17分24.370秒）；物理独立性及持续 RPO/RTO 待验 |
+| T20/T21 | 分层备份、只读恢复、证据解冻已实现，本轮修复 F01/F06 | 离线故障注入+2026-11-11 owner 核验的远程独立故障域已建立并验证 protected 账本点（backup_8e99…，远端 index）；持续 RPO/RTO、媒体 full 与介质损坏演练待 T22 |
+| T22 | 隔离灾备组合测试已有 | 跨机 full 只读恢复通过（38ms/小样本，cut 到故障 17分24.370秒）；独立故障域已由远程主机提供（用于 protected 点）；持续 RPO/RTO、媒体 full 与物理介质损坏演练未测 |
 
 优先级 1–4：代码修复及规范同步。优先级 5：Linux Node 24/22 全量各 406 项通过，真实媒体、双向迁移和一次跨机 full 只读恢复通过；物理故障域、长期 RPO/RTO 与真实外发范围仍另验。优先级 6：按审计建议后置记忆能力，§9 仍为待审核规划，不升级 schema、不保存新增对话记忆。
 
@@ -393,7 +393,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 ### T20：可信恢复点、分层备份与保护健康【验收要求；现状见 §0】
 
-**实现状态（2026-11-11，机制已实现；真实保护受限）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。真实数据目录 `C:\Users\22338\.dsh\dsh-bili-unified` 已初始化并有 12 个历史恢复点（最近账本点 `backup_3ba1dea24c7345fe88e58fc3fd606faa`，2026-11-10T15:05:54Z），但当前 `backup.status=unprotected/independent_failure_domain_not_verified`；本机仅一块物理 NVMe 盘（C:/D: 同盘，Get-PhysicalDisk 仅 Disk0），无法提供独立故障域。owner 须在 TTY 中写入含 sourceRoot/destinationRoot/verifiedBy/verifiedAt/independent 的策略并建立新点，才能恢复受保护派发；同盘多份不算独立，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。
+**实现状态（2026-11-11，独立故障域已实核并建立 protected 点）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。owner 提供了独立物理故障域（腾讯云主机 `42.193.20.17`，经 WSL Samba→SSHFS 挂载为 UNC `\\172.30.28.135\dsh-bili-backups`），并在真实 TTY 中保存含结构化 `failureDomainVerification` 的策略、创建 `backup_8e99f036090b41008ac33566d00f4a57` 账本点（cutAt `2026-11-11T13:59:05.299Z`，verifiedAt `13:59:16.146Z`，47 文件；`backup.status=protected`，远端 `index.json` 一致）。旧同盘策略的 12 个历史点因 policyRevision 不匹配不再计入保护；ledger 点不覆盖媒体（`mediaUnprotected=true`，full 点与真实发布另行）。远端 `/srv/dsh-bili-backups` 所在盘可用约 4.8G；WSL IP 为动态，WSL 重启后需重跑 `.dsh-probe/setup-remote-backup.ps1`，IP 变化时需重新保存策略。持续 15 分钟调度、20 分钟上限、24 小时媒体目标与 RPO/RTO 仍属 T22 待测，见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`。
 
 **依赖**：T02、T14、T15。
 
@@ -519,6 +519,8 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 #### T12.2：真实 B 站/External 发布验收（可选授权）【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，DM 单动作已真实验收，整体仍 BLOCKED）**：owner 在真实 TTY 中按 `scripts/acceptance/real-dm.mjs` 完成 1 条白名单私信真实写入：收件人 508187015、文本 `hello`、保护点 `backup_2aff9a1b172148d29240c81743da421c`（protected，age 11.8s）、task `task_f6ad8b41f0744c5f881eb746521ba576` succeeded、operation `op_d2f63521d5e1470da2c8e125403003bf` confirmed、receipt `externalId=7706537081688760000 verification=platform_readback`，并用只读 `svr_sync/fetch_session_msgs` 回读确认平台存在该条消息（2026-11-10T13:39:49Z，sender=3546827282450731）。过程中还修复了 DM preflight/dispatch 重复读、`send_msg` 的 UUID `dev_id`/`sender_uid`、平台拒绝码 not_sent 归类与写配额归还（详见 `report/DM_UNKNOWN_OP_EVIDENCE_2026-11-10.md`）。评论、External 投稿、Manual Bundle 发布仍未实测；备份目标与 C: 同盘（非独立故障域），恢复演练未做，故 T12.2 其余部分保持 **BLOCKED**。
+
+**实现状态（2026-11-11，评论单动作已真实验收，整体仍受限）**：owner 提供远程独立备份介质（腾讯云 VM，经 WSL Samba→SSHFS 挂载），在真实 TTY 中完成备份策略保存与 `backup_8e99f036090b41008ac33566d00f4a57` 账本点创建（cutAt `2026-11-11T13:59:05.299Z`，verifiedAt `13:59:16.146Z`，47 文件，`protected`）。随后对热门视频 `BV1mv4Y6rESW` 生成评论草稿（`task_ac3a25534fb34d5e9bbaaf8fc8315d84`，approval `approval_e9291ecebbdc4b6cac274ed065f4f80e`），owner 在真实 TTY 输入一次性挑战并带审批 `nonce` 执行 `approval decide ... --go`：`op_5f916581484f4550a3d6bd9c1baf645a` confirmed，receipt `externalId=323659699648`、`url=...#reply323659699648`、`verification=platform_readback`；独立只读 `x/v2/reply` 回读确认 rpid 323659699648、mid 3546827282450731、文本一致、`state=0`。首次 `approval decide --go` 因未带审批 `nonce` 返回 `APPROVAL_STALE`，零副作用后由 TTY 脚本重试成功。Manual Bundle 与 External 投稿仍未实测，故 T12.2 不整体标 DONE；证据见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`。
 
 **依赖**：T11、T03、T09；另需用户明确授权账号、内容、动作、额度和发布器执行范围。
 
@@ -1032,4 +1034,4 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 **验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
 
-**仍未完成/未实测（2026-11-11 更新）**：T12.1 approve 路径与 DSH 内 IM 持续组合（机器人 QQ 受腾讯风控离线）、T12.2 评论/Manual/External 真实写、T12.3 真实双系统迁移、T20/T22 独立故障域与持续 RPO/RTO、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。Linux 真实媒体、双向跨 OS 合成数据与跨机 full 只读恢复已于 2026-11-11 通过；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
+**仍未完成/未实测（2026-11-11 更新）**：T12.1 approve 路径与 DSH 内 IM 持续组合（机器人 QQ 受腾讯风控离线）、T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、单条真实评论（平台回读）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。

@@ -1,0 +1,85 @@
+{
+  "recordedAt": "2026-11-11T14:07:36.104Z",
+  "acceptance": "P3-independent-backup-and-real-comment",
+  "backup": {
+    "policyDestinationRoot": "\\\\172.30.28.135\\dsh-bili-backups",
+    "failureDomain": "remote-host:42.193.20.17 (Tencent Cloud VM-0-5-ubuntu; independent physical host via WSL2 SSHFS + Samba mount; local host has a single NVMe Disk0)",
+    "failureDomainVerifiedBy": "白阑王",
+    "failureDomainVerification": {
+      "independent": true,
+      "sourceRoot": "C:\\Users\\22338\\.dsh\\dsh-bili-unified",
+      "destinationRoot": "\\\\172.30.28.135\\dsh-bili-backups",
+      "verifiedBy": "白阑王",
+      "verifiedAt": "2026-11-11T13:50:15.982Z"
+    },
+    "backupId": "backup_8e99f036090b41008ac33566d00f4a57",
+    "kind": "ledger",
+    "status": "verified",
+    "cutAt": "2026-11-11T13:59:05.299Z",
+    "verifiedAt": "2026-11-11T13:59:16.146Z",
+    "files": 47,
+    "cutEventSeq": 134,
+    "sourceStateHash": "jcs-sha256-v1:6e713678481c8e2ea66e97fc7b705f7c1f01f76e5cdb8f25611cebaeee9280a7",
+    "snapshotHash": "jcs-sha256-v1:e32ff719cb6d88c5a331057acb7a4afba44b00ad3237c33d93565eb7597c5a91",
+    "policyRevision": "jcs-sha256-v1:10e30aefa23fbc0196d0809f239e102ed1b7af084d4be12c7c97ffa723a5afb4",
+    "protectionStatusAtDispatch": "protected",
+    "dispatchCutAgeMs": 434051,
+    "limits": [
+      "ledger only; media coverage complete=false",
+      "remote diskspace ~4.8G free (92% used)",
+      "WSL IP dynamic; setup script must be re-run after WSL restart",
+      "sustained RPO/RTO and media full point belong to T22 and remain unverified"
+    ]
+  },
+  "comment": {
+    "target": {
+      "bvid": "BV1mv4Y6rESW",
+      "aid": 117565317715732,
+      "cid": 43362486677,
+      "title": "近十几年的梗都在这里了",
+      "authorMid": "27501480",
+      "authorName": "怠惰的一休"
+    },
+    "text": "这个合集太全了，看完很有共鸣，感谢整理！",
+    "textHash": "jcs-sha256-v1:ed7d96c39084104b02552c4e2a28ad68ee7d9f927ab2a10238b7af08c465765a",
+    "mode": "approval",
+    "taskId": "task_ac3a25534fb34d5e9bbaaf8fc8315d84",
+    "approvalId": "approval_e9291ecebbdc4b6cac274ed065f4f80e",
+    "operationId": "op_5f916581484f4550a3d6bd9c1baf645a",
+    "taskStatus": "succeeded",
+    "taskSettled": true,
+    "startedAt": "2026-11-11T14:06:19.750Z",
+    "finishedAt": "2026-11-11T14:06:21.145Z",
+    "receipt": {
+      "externalId": "323659699648",
+      "url": "https://www.bilibili.com/video/BV1mv4Y6rESW#reply323659699648",
+      "verification": "platform_readback",
+      "receivedAt": "2026-11-11T14:06:21.101Z"
+    },
+    "independentPlatformReadback": {
+      "endpoint": "/x/v2/reply?type=1&oid=117565317715732&sort=0&ps=20&pn=1",
+      "rpid": "323659699648",
+      "mid": "3546827282450731",
+      "uname": "白阑王",
+      "ctime": 1794405980,
+      "ctimeUtc": "2026-11-11T14:06:20.000Z",
+      "content": "这个合集太全了，看完很有共鸣，感谢整理！",
+      "textMatches": true,
+      "like": 0,
+      "state": 0
+    },
+    "firstAttempt": {
+      "result": "APPROVAL_STALE: approval nonce is required",
+      "sideEffects": "none; approval not consumed, no dispatch"
+    }
+  },
+  "remaining": [
+    "T12.1 IM approve path and DSH-internal IM composition (QQ risk control, bot offline)",
+    "T12.2 Manual/External publishing real acceptance",
+    "T12.3 real Windows/Linux migration",
+    "T20/T22 sustained RPO/RTO and physical media drill",
+    "T17.3 production TTY human proof",
+    "T11 manual review sign-off",
+    "GATE-0 deferred; GATE-MEM unaudited"
+  ]
+}
