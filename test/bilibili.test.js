@@ -261,7 +261,7 @@ test('read retries reserve read quota again and skip the read time slot', async 
   assert.deepEqual(beforeReadCalls.map((info) => [info.attempt, info.retry]), [[0, false], [1, true]]);
 });
 
-test('default store/rateLimiter wiring enforces the read time slot', async () => {
+test('default store/rateLimiter wiring waits outside the transaction for the read time slot', async () => {
   const harness = await createHarness();
   try {
     await harness.store.transaction(async (draft) => {
@@ -284,12 +284,13 @@ test('default store/rateLimiter wiring enforces the read time slot', async () =>
       fetchImpl,
       now: harness.now,
       store: harness.store,
-      rateLimiter: harness.rateLimiter
+      rateLimiter: harness.rateLimiter,
+      sleep: async ms => { harness.now.advance(ms); }
     });
     await client.whoami();
     const callsAfterFirst = fetchImpl.calls.length;
-    await assert.rejects(() => client.whoami(), (error) => error.code === 'RATE_LIMITED');
-    assert.equal(fetchImpl.calls.length, callsAfterFirst);
+    await client.whoami();
+    assert.equal(fetchImpl.calls.length, callsAfterFirst + 1);
     harness.now.advance(harness.config.rateLimit.minGapMs + 1);
     await client.whoami();
   } finally {

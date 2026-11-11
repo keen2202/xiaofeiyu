@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readFailureDomainVerification } from './_failure-domain.mjs';
 import {
   WORK_DIR,
   ensureWorkDir,
@@ -31,7 +32,7 @@ const { flags } = parseArgs(process.argv.slice(2));
 if (flags.help) {
   console.log(`Usage: node scripts/acceptance/preflight.mjs [--inputs <json>] [--write-template]
   QQ:   --base-url <http url> --ws-url <ws url> [--token-env NAME] [--owner-qq <qq>] [--bot-account <qq>]
-  DM:   --to <mid> --text <text> --dest <abs path> --failure-domain <text> --verified-by <name>
+  DM:   --to <mid> --text <text> --dest <abs path> --failure-domain <text> --verified-by <name> --verification <json>
   Other: --data-dir <dir>`);
   process.exit(0);
 }
@@ -50,8 +51,9 @@ if (flags['write-template']) {
     bilibili: {
       to: 'REPLACE_PEER_MID',
       text: 'dsh-bili-unified acceptance ping',
-      dest: 'D:\\dsh-bili-backups',
-      failureDomain: 'same-physical-disk:D (NVMe Disk0; NOT independent)',
+      dest: 'REPLACE_INDEPENDENT_MEDIA_ABSOLUTE_PATH',
+      failureDomain: 'REPLACE_OWNER_VERIFIED_FAILURE_DOMAIN',
+      verification: 'REPLACE_OWNER_VERIFICATION_JSON_PATH',
       verifiedBy: 'REPLACE_OWNER_NAME'
     }
   });
@@ -88,6 +90,7 @@ const dm = {
   text: pick(flags.text, inputs.bilibili?.text),
   dest: pick(flags.dest, inputs.bilibili?.dest),
   failureDomain: pick(flags['failure-domain'], inputs.bilibili?.failureDomain),
+  verification: pick(flags.verification, inputs.bilibili?.verification),
   verifiedBy: pick(flags['verified-by'], inputs.bilibili?.verifiedBy)
 };
 const dataDir = optionalString(flags, 'data-dir', null)
@@ -175,6 +178,10 @@ try {
     'backup', 'status', '--data-dir', dataDir
   ], { encoding: 'utf8', cwd: path.join(WORK_DIR, '..', '..'), maxBuffer: 4 * 1024 * 1024 });
   report.backup = JSON.parse(out);
+  const status = JSON.parse(execFileSync(process.execPath, [path.join(WORK_DIR, '..', '..', 'cli.mjs'),
+    'status', '--data-dir', dataDir], { encoding: 'utf8', cwd: path.join(WORK_DIR, '..', '..'), maxBuffer: 4 * 1024 * 1024 }));
+  report.backup.protection = status.backup;
+  if (status.backup?.status !== 'protected') problems.push(`备份保护未就绪: ${status.backup?.reason || 'unprotected'}`);
   const service = report.backup.service || {};
   if (!service.latest?.backupId) problems.push('尚无有效恢复点：真实写入前需 owner 在 TTY 中创建');
   else if (Number(service.latest.ageMs) > Number(service.maxPointAgeMinutes || 20) * 60000) problems.push('最新恢复点已超龄，需重新 backup create');
@@ -191,6 +198,7 @@ if (dm.to || dm.text || dm.dest) {
     if (!/^\d{1,20}$/.test(dm.to)) throw new Error('--to 必须是数字 mid');
     if (!path.isAbsolute(dm.dest)) throw new Error('--dest 必须是绝对路径');
     if (dm.text.length > 300) throw new Error('--text 超过 DM maxLength(300)');
+    readFailureDomainVerification(dm.verification, { dataDir, destinationRoot: dm.dest, failureDomain: dm.failureDomain, verifiedBy: dm.verifiedBy });
     report.bilibili = { configured: true, to: dm.to, textLength: dm.text.length, dest: dm.dest, failureDomain: dm.failureDomain, verifiedBy: dm.verifiedBy };
   } catch (error) {
     problems.push(`DM 输入无效: ${error.message}`);
@@ -209,7 +217,7 @@ if (report.qq.configured && report.qq.capabilities.status === 'available') {
   console.log(`  node scripts/acceptance/qq-setup.mjs --base-url ${report.qq.baseUrl} --ws-url ${report.qq.wsUrl} --token-env ${report.qq.tokenEnv} --owner-qq ${report.qq.ownerQQ}${report.qq.bot?.botAccountId ? ` --bot-account ${report.qq.bot.botAccountId}` : ''}`);
 }
 if (report.bilibili.configured) {
-  console.log(`  node scripts/acceptance/real-dm.mjs --to ${dm.to} --text "${dm.text}" --dest "${dm.dest}" --failure-domain "${dm.failureDomain}" --verified-by "${dm.verifiedBy}"`);
+  console.log(`  node scripts/acceptance/real-dm.mjs --to ${dm.to} --text "${dm.text}" --dest "${dm.dest}" --failure-domain "${dm.failureDomain}" --verified-by "${dm.verifiedBy}" --verification "${dm.verification}" --data-dir "${dataDir}"`);
 }
 printNextSteps([
   '[preflight] 本步骤只读：未创建备份点、未修改配置、未发送消息。',

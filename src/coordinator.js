@@ -38,8 +38,8 @@ export class Coordinator {
     this._tickPromise = null;
   }
 
-  async _ownerPrincipal() {
-    return this.store.transaction(async (draft, tx) => this.identity.ensureLocalOwner(tx));
+  async _schedulerPrincipal() {
+    return this.store.transaction(async (draft, tx) => this.identity.ensureScheduler(tx, this.configService.get()));
   }
 
   async start() {
@@ -152,7 +152,7 @@ export class Coordinator {
           // both-book generation match manual runs (§16 / M06).
           let succeeded = false;
           try {
-            const principal = await this._ownerPrincipal();
+            const principal = await this._schedulerPrincipal();
             await this.runDiary({
               date: today,
               scope: this._workspaceScope(state.workspaceId),
@@ -203,7 +203,7 @@ export class Coordinator {
     if (trigger === 'scheduler' && !config.scheduler.enabled) {
       throw new AppError('FEATURE_DISABLED', 'scheduler is disabled');
     }
-    const owner = principal || (await this._ownerPrincipal());
+    const owner = principal || (await this._schedulerPrincipal());
     const promise = (async () => {
       const task = await this.browse.createTask({ principal: owner, trigger, input });
       const round = await this.browse.run({ taskId: task.id, principal: owner, deferCompletion: true });
@@ -381,7 +381,7 @@ export class Coordinator {
   }
 
   async _runDiary({ date, scope = null, book = null, force = false, principal = null } = {}) {
-    const owner = principal || (await this._ownerPrincipal());
+    const owner = principal || (await this._schedulerPrincipal());
     const config = this.configService.get();
     const state = await this.store.getSnapshot();
     const resolvedScope = scope || this._workspaceScope(state.workspaceId);

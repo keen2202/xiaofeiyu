@@ -187,6 +187,11 @@ export class BrowseModule {
           continue;
         }
         const subtitleText = content.subtitle?.text || '';
+        if (content.subtitleError) {
+          failed.push({ contentRef: content.contentRef, code: content.subtitleError.code,
+            message: 'subtitle retrieval failed; candidate will observe failure cooldown' });
+          continue;
+        }
         if (subtitleText.trim().length < config.browse.minSubtitleChars) {
           if (config.browse.allowNoSubtitle === true) {
             // FR-BRO-004 alternative content: keep title/description facts and

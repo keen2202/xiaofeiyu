@@ -1,15 +1,42 @@
 # dsh-bili-unified 实施任务与验收计划
 
 - 版本：**0.2.1-draft**
-- 状态：**方向已确认；0.2.1-draft 已在本工作区实现（离线验证通过）；GATE-0 文档审阅与真实环境验收另行记录**
+- 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
 - 日期：2026-11-07
 - 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
-- 项目根目录：`D:/workbuddy_space/dsh-bili-unified`
+- 项目根目录：`D:/Workespace/xiaofeiyu`
 - 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`。
 - 基线：`DESIGN.md`、`SPEC.md` 的 0.2.1-draft；普通业务配置参考既有 `config.example.json`，规范验收统一对照 SPEC §19。
-- 历史轮次：此前已将账本 v3、可信备份及灾备建议拆为任务与验收；2026-11-05 本轮依据复核报告同步修订 DESIGN/SPEC/TASKS 和两份历史摘要，不修改 config、package、代码或权限，当时尚未建立 git 仓库、未做提交（2026-11-07 已建立仓库并提交基线）。下列源码、测试、策略与产物路径均为获批后的实施目标，不表示已实现或接线；config.example.json 没有独立 BackupPolicy，`<dataDir>/backup-policy.json` 仍是未来实现对象。
+- 历史轮次：此前已将账本 v3、可信备份及灾备建议拆为任务与验收；2026-11-05 本轮依据复核报告同步修订 DESIGN/SPEC/TASKS 和两份历史摘要，不修改 config、package、代码或权限，当时尚未建立 git 仓库、未做提交（2026-11-07 已建立仓库并提交基线）。下文任务描述保留计划与验收要求；当前实现见 §0。BackupPolicy 已作为独立本地策略接线，不属于普通 config.example.json。
 - 当前规范范围：一个轻核心＋可选平台/IM/执行适配器＋ArtifactStore；独立真实视频生产；同插件兼容 schema 停机迁移；分层可信备份、只读灾备及证据驱动的分 scope 解冻。保留上一版42条新增需求，本次加10条，共52条逐项映射；不是微服务、旧插件导入、远程 worker 或自动接管。
 - 用户另已选择“事实＋偏好＋经验”的记忆范围；§9为本轮新增的待审核规划，不等于完整对话留存授权、记忆实现完成或已修改DESIGN/SPEC。记忆机制经GATE-MEM审核并回写主规范后才进入实现，不擅自升级账本v3或扩大原52条FR基线。
+
+## 0. 唯一现行实施与验收状态（2026-11-11）
+
+本节取代下文计划标签和 §10 历史实施状态。修复基线为 0cfb4ae + 本轮工作区改动；完整变更和复核证据见 [本轮整改报告](report/PRIORITY_FIXES_2026-11-11.md)。历史审计保留作为修复前证据，不重写探针结果。离线通过与真实验收分开计算，不宣称全部交付。
+
+| 任务 | 当前实现 | 当前验收与剩余条件 |
+|---|---|---|
+| T00/T01 | 基础工程、文档已有 | 文档持续同步；记忆范围单独待 GATE-MEM |
+| T02/T14 | 存储/配置/身份/副作用边界已实现，本轮修复 F01/F03/F09/F10 | 离线回归；主体撤销、绑定撤销、服务调度、配置恢复覆盖 |
+| T03/T05 | B 站读取/浏览已实现，本轮修复 F02/F04 | 真实 client+adapter+Browse 的 Mock 网络组合；非真实在线验收 |
+| T04/T08 | 可选 Agent/日记已实现 | 离线通过；商业服务未实测 |
+| T06/T07 | 评论与 DM 已实现 | 历史 DM 单条业务成功；评论未实测，DM 同盘保护不满足 FR-DR-002 |
+| T09 | Manual/External 已实现 | 离线回归；真实投稿未验收 |
+| T10 | CLI/HTTP/宿主及调度已接线 | 本轮补能力重验 CLI；真实 DSH 挂载有历史证据，长期组合待验收 |
+| T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
+| T12.1/T16 | IM 契约与桥接已实现 | 11-10 真实入站→本地人类拒绝→回信已有证据；稳定组合、独立故障域保护仍待验收 |
+| T12.2 | DM 历史单动作业务成功 | 评论/Manual/External 未实测；同盘旧 DM 记录不算满足完整灾备前置 |
+| T12.3 | 跨系统迁移实现已有 | Windows→Linux→Windows 合成数据交接/重启通过；测试人类证明与保护夹具，生产授权前置仍另验 |
+| T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
+| T15 | Artifact 已实现 | Linux 406 项零跳过，软/硬链接防护执行通过；Windows 系统权限不变 |
+| T17.1/T17.2 | 本地固定阶段执行与验证已实现 | 离线回归通过 |
+| T17.3 | 真实媒体验收脚本已有 | Linux ffmpeg/ffprobe 6.1.1 真实两组成片/封面及解码/hash 通过；使用测试 human verifier |
+| T18 | 停机迁移及业务能力重验已实现，本轮修复 F05 | 双目录 CLI/runtime、崩溃阻断、hold/新审批回归；真实双向跨 OS 数据交接通过 |
+| T20/T21 | 分层备份、只读恢复、证据解冻已实现，本轮修复 F01/F06 | 离线故障注入；物理独立性必须 owner 实核 |
+| T22 | 隔离灾备组合测试已有 | 跨机 full 只读恢复通过（38ms/小样本，cut 到故障 17分24.370秒）；物理独立性及持续 RPO/RTO 待验 |
+
+优先级 1–4：代码修复及规范同步。优先级 5：Linux Node 24/22 全量各 406 项通过，真实媒体、双向迁移和一次跨机 full 只读恢复通过；物理故障域、长期 RPO/RTO 与真实外发范围仍另验。优先级 6：按审计建议后置记忆能力，§9 仍为待审核规划，不升级 schema、不保存新增对话记忆。
 
 ## 1. 审核门与完成口径
 
@@ -21,7 +48,7 @@
 - [ ] 复核第 8 节已统一的跨文档口径；没有批准前不得自行更改权限、回滚或账本语义。
 - [ ] 用户明确批准 **0.2.1-draft 修订稿**（有条件批准须明确可执行范围），才可启动相应 PENDING 项。
 
-**当前：未批准实施。** 不再询问是否选择停机迁移/远程执行、是否引入独立生产等已确认方向。修订方向确认不是 GATE-0 解除，也不是对真实平台写入、IM 发消息、运行媒体工具的授权。
+**历史审阅状态：GATE-0 尚未正式签署；用户已授权本工作区实现及本轮按优先级 1–6 整改，继续执行此范围，无需重新请求编码许可。** 不再询问是否选择停机迁移/远程执行、是否引入独立生产等已确认方向。修订方向确认不是 GATE-0 解除，也不是对真实平台写入、IM 发消息、运行媒体工具的授权。
 
 ### GATE-MEM：记忆规划单独审核
 
@@ -89,7 +116,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 ## 3. 工作项
 
-### T00：参考源码分析【DONE，历史研究完成】
+### T00：参考源码分析【验收要求；现状见 §0】
 
 **依赖**：无。
 
@@ -99,7 +126,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：上述章节保留源码来源、证据、缺口和不采用范围，不运行参考项目安装脚本。
 
-### T01：设计与规范修订稿【DONE，文档草案已编制，待审】
+### T01：设计与规范修订稿【验收要求；现状见 §0】
 
 **依赖**：T00。
 
@@ -109,7 +136,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：本任务表已编制，但用户审核未完成；D/R 编号齐全，52条新增 FR 有具体工作、SPEC 章节和计划测试。第 8 节记录确定规则与静态检查口径；T01 DONE 只表示文档草案工作完成，不表示已接线、测试通过或解除 GATE-0。
 
-### T02：核心配置、稳定身份存储、Task 与事件归档【PENDING】
+### T02：核心配置、稳定身份存储、Task 与事件归档【验收要求；现状见 §0】
 
 **依赖**：GATE-0。
 
@@ -136,7 +163,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 - 单事件 payload 超64KiB须转受管引用而非静默截断；journalPending达10000条阻止新业务但允许收尾与归档恢复，不丢事实。
 - 同一reserved样本分别走完整历史普通重启与旧备份恢复：前者满足属主证据才cancelled，后者保留待核查/RecoveryHold；缺主state不误判首次运行。v2/仅改version的假v3、丢epoch/hold及仅事件摘要重建均失败；损坏原件不改动，恢复分支另由T21验证。
 
-### T14：公共契约、身份/审批及副作用网关基础【PENDING】
+### T14：公共契约、身份/审批及副作用网关基础【验收要求；现状见 §0】
 
 **依赖**：T02。
 
@@ -163,7 +190,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 - 注入健康→过期、无服务/无策略、scope冻结替身：预留时与发送前均拒绝平台/付费/IM，go/审批/config/resume/resolve不能覆盖；跨Cookie/requestId/新预算窗口不能绕过，其他独立scope不误消费额度。在途收尾可落账，符合条件的新免费本地工作无需平台备份健康，但不能越过匹配hold。
 - 基础审批/CommandService 不 import dsh-im 或 DSH 外壳；缺宿主人类证明仅相应入口不可用，已验证本地人类路径可独立运行。替身只用于离线契约，实际服务接入及同机多入口无旁路由T10/T22验收。
 
-### T03：可选 B 站协议与平台策略【PENDING】
+### T03：可选 B 站协议与平台策略【验收要求；现状见 §0】
 
 **依赖**：T14。
 
@@ -173,7 +200,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：SPEC §7～8/27、FR-EXT-003/004。固定时间验证 WBI；非0 code无成功，缺可信回执/派发后超时unknown、零自动重试；仅允许域名收到Cookie，字幕HTTPS/CDN/Agent无Cookie。用注入门禁验证无保护/超龄/账号scope冻结时评论DM零新发送，换Cookie/新请求不绕过、迟到回执仍入账；实际组合见T22。平台不可用不阻断workspace生产。所有协议测试Mock fetch，不访问真实B站。
 
-### T04：可选 AgentClient 与商业扩展接口【PENDING】
+### T04：可选 AgentClient 与商业扩展接口【验收要求；现状见 §0】
 
 **依赖**：T14。
 
@@ -183,7 +210,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：SPEC §9、FR-PRO-001/006。非法 JSON 为 AGENT_OUTPUT_INVALID；禁用时零网络且确定性降级；不泄漏 Key/Cookie，不因模型失败绕过审批。生产 dry 模式零模型/生图/TTS 调用；付费 Mock 验证预算预留与 unknown，报告不得称商业服务已集成。
 
-### T05：Browse 模块【PENDING】
+### T05：Browse 模块【验收要求；现状见 §0】
 
 **依赖**：T03。
 
@@ -193,7 +220,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-BRO-001～008 全覆盖；开关/调度约束、多来源同 BV 只处理一次、无字幕按策略跳过、详情失败不计已看懂、单条失败整轮 partial；证明 Browse 没有调用任何评论/DM 写接口。
 
-### T06：Comments 与统一审批【PENDING】
+### T06：Comments 与统一审批【验收要求；现状见 §0】
 
 **依赖**：T03、T04、T05、T14。
 
@@ -203,7 +230,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-COM-001～010、FR-IM-004。审批模式不自动外发，裸 approved 无效；草稿过期/改参重审；同 BV 不同正文仍拒绝、同文跨视频拒绝；无 Agent 且模板未允许不自动生成；dry 不写已发送记录，unknown 不再发送且保留原 Operation。
 
-### T07：DirectMessages 白名单发送【PENDING】
+### T07：DirectMessages 白名单发送【验收要求；现状见 §0】
 
 **依赖**：T03、T05、T14。
 
@@ -213,7 +240,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-DM-001～008。手动/Agent 也不能越过白名单；关闭互关仍保留白名单；两渠道可各一次，同渠道重复拒绝；超时 unknown 零重发，完整私信不进入日记/日志。IM 控制通道与本模块没有隐式互通。
 
-### T08：scope 日记与可恢复双阶段提交【PENDING】
+### T08：scope 日记与可恢复双阶段提交【验收要求；现状见 §0】
 
 **依赖**：T02、T04、T14。
 
@@ -223,7 +250,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：SPEC §14/19/27。不同MID/workspace同日不覆盖；超过2000热事件仍完整重建；unknown resolve只增加必要修订；旧生成者不能覆盖新版本。注入三个提交窗口崩溃，按摘要完成/撤销并重建，不追加重复事实；缺档fail-closed，跨epoch裸seq拒绝、缺正文标待重建。公共/私人均无凭据，公共无完整私信/敏感路径，查询按scope ACL；不自动通过IM发送日记，不从日记摘要反推永久键。模块测试用事件/屏障样本，跨模块验证在T19/T22，不反向依赖备份实现。
 
-### T15：ArtifactStore 与受控素材导入【PENDING】
+### T15：ArtifactStore 与受控素材导入【验收要求；现状见 §0】
 
 **依赖**：T14。
 
@@ -233,7 +260,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-ART-001～006。同内容引用稳定且不可原地替换；API/IM 不能用 artifactId 读目录或越 scope；越界、盘符/UNC、链接、超限、hash 不符、缺引用字节、跨平台重名冲突均失败。崩溃恢复 pendingImport 只回收可证明归属的临时文件，不删源/定稿/用户目录。发布前复核摘要并测试审批后文件替换拒绝；迁移封存前无未完成导入；注入短屏障/固定引用验证提交与回收竞态，实际ledger/full在T20/T22验收。
 
-### T16：IM 契约与宿主薄桥接【真实宿主（NapCat OneBot v11）入站/出站已验证；T12.1 真实 IM 闭环仍待授权】
+### T16：IM 契约与宿主薄桥接【验收要求；现状见 §0】
 
 **依赖**：T16.1、T16.2。
 
@@ -241,7 +268,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **工作/验收**：分别完成离线契约和真实宿主绑定，真实授权消息闭环另计 T12.1。T16.1 通过只表示契约完成，不将 T16 或真实 IM 标为全功能完成；T16.2 缺条件不阻塞 T17 或其他离线模块。
 
-#### T16.1：IM 入站契约、命令防重与 outbox【PENDING】
+#### T16.1：IM 入站契约、命令防重与 outbox【验收要求；现状见 §0】
 
 **实现状态（2026-11-09，不改变 PENDING）**：入站契约与 outbox 已在工作区实现，`test/im-contract.test.js`、`test/outbox.test.js` 覆盖身份/防重/审批/发送状态语义；真实宿主与真实消息闭环仍未验收（见 T16.2/T12.1），不以 Mock 通过解除阻塞。
 
@@ -259,7 +286,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-IM-001～006及§27。两进程重投只创建一个Task；未知主体/错群/撤权/超时/未来时间/body伪造拒绝；输入编辑不变更已接纳任务。审批干跑不消费go、查询不能看他人任务；完整历史普通重启outbox不漏终态，灾备旧outbox留hold；通知失败/unknown不重跑生产、不回滚业务。无策略/超龄/发送scope hold时所有回信零新派发，在途回执可记；换bot能力/新消息键不绕过原scope，撤销过的绑定不能由旧备份复活。测试注入门禁，实服务接线见T22；默认无宿主服务明确unavailable，Mock不注册成真实通道。
 
-#### T16.2：真实 dsh-im 只读能力探测与薄适配【DONE】
+#### T16.2：真实 dsh-im 只读能力探测与薄适配【验收要求；现状见 §0】
 
 **实现状态（2026-11-09 探测，保持 BLOCKED）**：本机 DSH 0.2.2-rc.1 未提供 dsh-im 宿主通道（`status.im` 为 enabled=false / configured=false / reason=disabled，属未启用而非加载失败），QQ 客户端在运行但未发现 OneBot/NapCat 类桥接监听；无可信宿主消息来源，按 FR-IM-007 不启用任何 IM 能力，也不以 Mock 冒充真实接入（见 `report/DSH_HOST_PROBE_2026-11-09.md` §6）。解除条件：提供可访问的真实 dsh-im 宿主或用户授权的 OneBot v11 桥接端点，并完成只读能力/身份语义探测。
 
@@ -279,7 +306,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-IM-007。把脱敏真实结构固化为回归样本，验证映射和注销；缺任一前提则对应能力 unavailable/BLOCKED，不能用 Mock 成功解除。无可信人类来源时 IM 审批 fail-closed，仅可转经验证本地人类流程；读探测通过不等于消息已发送或真实 IM 已交付，继续等待 T12.1 单独授权。
 
-### T17：独立生产与本地执行【BLOCKED，真实媒体工具/执行授权尚待提供】
+### T17：独立生产与本地执行【验收要求；现状见 §0】
 
 **依赖**：T17.1、T17.2、T17.3。
 
@@ -287,7 +314,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **工作/验收**：本地执行、业务流水线、真实媒体分项验收；T17.1/17.2 的代码可在 GATE-0 后独立推进，但没有 T17.3 的 MP4/封面证据不得声称生产能力完成。没有平台 Cookie、B 站适配器、IM 或商业服务仍须可生产。
 
-#### T17.1：Local ExecutionBackend、Runner 与回执【PENDING】
+#### T17.1：Local ExecutionBackend、Runner 与回执【验收要求；现状见 §0】
 
 **依赖**：T14、T15。
 
@@ -297,7 +324,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-PRO-004/005/007/008/010。同 seq 同内容幂等、异内容冲突、乱序/旧 attempt 不覆盖；持久记录到 spawn 间崩溃先查属主，不能盲重开；ACK/退出 0 不代表业务完成。interrupted/终态resume生成新executionId并验证同task/stage/inputHash重绑定，旧checkpoint及检查点artifact哈希不匹配则拒绝，相同executionId重复submit不重启。超限输出有界收尾；参数含 shell 字符不执行注入；生产 Runner 环境无 B 站 Cookie/秘密全集/账本路径。取消与成功竞态保留事实，无法确认停止不释放槽位；remote 明确不支持、零端口/心跳/网络 worker。
 
-#### T17.2：ProductionTask 与 local-slideshow-v1【PENDING】
+#### T17.2：ProductionTask 与 local-slideshow-v1【验收要求；现状见 §0】
 
 **依赖**：T17.1。
 
@@ -315,7 +342,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-PRO-001～009。空 Cookie、禁用 B 站/Browse/IM/Agent 的环境可接受生产；脚本/素材缺失、奇数/越界尺寸、非法 fps/时长/输出超限拒绝。缺工具只该 profile BLOCKED，不影响核心状态/日记。Mock 覆盖每阶段失败、缺封面、伪 manifest、损坏视频、hash 替换、合法无配音和非法 skip；任何不合格产物 ready=false。已付费/unknown 预算不随新 attempt 或取消释放；生产审批不能批准发布。真实产物必须另通过 T17.3，不能用 Mock 补足。
 
-#### T17.3：必需的真实本地 MP4/封面验收【BLOCKED】
+#### T17.3：必需的真实本地 MP4/封面验收【验收要求；现状见 §0】
 
 **依赖**：T17.2；另需用户显式提供受信 ffmpeg/ffprobe、授权目录和本地 profile 执行/人类审批。
 
@@ -325,7 +352,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：真实 MP4 可被 ffprobe 识别且完整解码，视频流、计划时长/偶数尺寸/fps/容量符合 profile，封面可读且 hash 与 manifest 一致；字幕/音轨与配置相符，无配音确有合法 skipped 证据。保存命令、工具版本、探测结果、产物 hash、阶段/Task ID 与 ready 标记，不以目录/脚本/Bundle 或外部发布器替代。再测缺工具/损坏输出使能力 BLOCKED/失败且核心仍可查。**这是生产交付必过项，不是 T12 的可选真实 B 站测试；缺工具不得 skip 后记通过。若 SPEC §22.1 的本地人类证明机制也不可用，则真实 go/人工审批同样 BLOCKED，但离线编码与替身测试仍可继续。**
 
-### T09：基于 Artifact 的独立 Publishing【PENDING】
+### T09：基于 Artifact 的独立 Publishing【验收要求；现状见 §0】
 
 **依赖**：T03、T14、T15。
 
@@ -342,7 +369,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：SPEC §15、FR-ART-004/005、FR-IM-004、FR-PRO-009。已有视频无生产任务可投稿、已批准文件被替换拒绝；重复审批仍为原 Task。Manual Bundle 永不直接已发布，假人类/无证据补录拒绝；External Mock 覆盖成功/启动前失败/启动后 unknown，核查保持原 operationId，禁止改 Provider 绕过冻结；全部路径不删源、不通过 shell。未验证的实际发布器及原生 UPOS 不算交付。
 
-### T18：同插件兼容 schema 停机迁移【PENDING】
+### T18：同插件兼容 schema 停机迁移【验收要求；现状见 §0】
 
 **依赖**：正向迁移为 T08、T09、T15、T16.1、T17.2，可使用 T02/T14 的 holds 结构与注入保护门禁；真实 prepare/activate 另需 T20 健康恢复点，恢复感知激活/回滚及 T18 完整验收另需 T21。T10/T22/T12.3 依赖的是 T18 完整验收，不得把正向部分完成当作 T18 DONE。
 
@@ -362,7 +389,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-MIG-001～010、FR-ART-005/006。两个不同根目录/instanceId 模拟全流程：prepare 与派发竞态只有一方获权、收尾可提交、孤儿不退则不能封存；事件/索引/字节逐项守恒。同 MID 换秘密保留占用；无 Cookie 的纯 workspace 可迁移，未核验平台仍禁用。错目标/版本/hash/链接/路径/超限/缺秘密拒绝相应激活；导入暂停，source release 与 target activate 各断电点幂等，旧端重启仍禁写。旧审批/queued/outbox 零自动重放，回滚最新业务键/额度/unknown 连续。双目录/路径模拟与真实跨 OS 结果分开，人工绕流程复制双启不在保证内。
 
-### T20：可信恢复点、分层备份与保护健康【PENDING】
+### T20：可信恢复点、分层备份与保护健康【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，保持 PENDING）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。真实数据目录 `C:\Users\22338\.dsh\dsh-bili-unified` 已初始化，但 `backup.status=unprotected/policy_not_configured`；本机仅一块物理 NVMe 盘（C:/D: 同盘），无法提供独立故障域，真实策略/恢复点与 owner 确认仍需在 TTY 中完成，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。
 
@@ -383,7 +410,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-DR-001～004；SPEC §19.5。覆盖cut同时有reserved、渲染、日记提交和Artifact提交，快照/引用同界且大媒体不持锁；备份重复请求幂等、超时/断电屏障可恢复，checkpointFence与迁移prepare并发只有一方获权。无策略/同盘未核验/超龄各入口零受保护派发但在途回执落账。验证partial目录、flush失败、缺字节/摘要错/满盘不替换last good；大日记derived/rebuild、80/100MiB容量边界、configRevision/hash/timeZone和sourceStateHash金标准；ledger缺媒体仅账本可恢复，full缺必需对象失败；8个新ledger不能删除最后full，prune不能删除共享/固定对象。仅verify通过不写restoreTested，15分钟间隔/20分钟最大年龄/24小时媒体目标不是已测SLA。
 
-### T21：只读灾备、证据核查与分范围解冻【PENDING】
+### T21：只读灾备、证据核查与分范围解冻【验收要求；现状见 §0】
 
 **依赖**：T20。
 
@@ -402,7 +429,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-DR-005～009及§19.5。以10:00cut、10:05已发、10:06丢账验证缺记录不能重发；reserved之后执行、unknown费用、原ID丢失、仅日记摘要、伪确认、冲突回执均保留恰当冻结。覆盖workspace/account.action/provider.budget/bot.conversation的scope包含、交集、通配、父hold与部分解冻矩阵，以及unknownExposure=null封顶拒绝；新epoch、新requestId、换Cookie均不得绕过。新epoch同裸seq不覆盖旧归档，旧权限/nonce/票据不复活。无旧写者隔离不得写；可靠隔离＋完整scope核查后可仅开该scope，其余继续hold。逐一注入recovery.json prepared/committed、state摘要和instance能力各写入断电点，证明revision不一致fail-closed、可幂等续办且最后一步前零派发；新恢复点仍携历史缺口。正常迁移保留epoch的组合验收在T18/T22，不让T21反向依赖迁移。
 
-### T10：Coordinator、惰性 DSH/CLI 与主体权限【PENDING】
+### T10：Coordinator、惰性 DSH/CLI 与主体权限【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，真实 DSH desktop profile 挂载已验证）**：插件以官方 profile 插件方式挂载进本机 DSH 0.2.2-rc.1 的 desktop profile：`dsh plugin --profile desktop add link:D:/Workespace/xiaofeiyu` 自动写入 dependency 与 `dsh.profile.bundles`；重启后 `plugin_manager list_bundles` 显示 `dsh-bili-unified` installed/enabled/removable、`rows=[include:dsh-bili-unified]`，会话中出现 9 个 `bili_unified_*` 工具且实际调用 `bili_unified_status` 成功，HTTP 前缀路由 `/dsh-bili-unified/api/status` 返回 `401 TRUST_UNAVAILABLE/host_admission_rejected`（admission 生效），插件数据目录复用现有 `C:\Users\22338\.dsh\dsh-bili-unified`（workspaceId/historyEpoch/账号/凭据 revision 均未变）。DSH 内 IM bridge 因启动时 NapCat 不在线（机器人 QQ 被腾讯风控下线，外部条件）按 fail-closed 未启动；恢复顺序应为 NapCat 先在线再启动 DSH。详见 `report/DSH_DESKTOP_MOUNT_2026-11-10.md`。
 
@@ -424,7 +451,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：SPEC §16～18、FR-IM-001/003/004、FR-LITE-001/002。重复启停不重复定时器/路由；cordis.patch.yml静态断言和错误码/HTTP双列映射全覆盖；等待审批、IM 离线/通知 unknown 不阻断 Browse。所有入口三级 dry 真值表、越权/他人任务/秘密/路径访问拒绝；无损 JSON 输出、失败非 0 退出。模型不能借 CLI 非交互身份升级；TTY/宿主证明缺失时敏感go拒绝；取消晚于成功保留事实，进程未停不假取消。状态/配置验证零登录探测，无可选服务仍可只读账本；真实宿主不足按能力报告，不以 Mock 通过声称实际接入。
 
-### T22：灾备集成、故障注入与隔离恢复演练【PENDING】
+### T22：灾备集成、故障注入与隔离恢复演练【验收要求；现状见 §0】
 
 **依赖**：T20、T21、T18、T10。
 
@@ -440,7 +467,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **先写失败测试与验收**：FR-DR-001～010及SPEC §19.5逐条通过，特别是10:00备份、10:05已发、10:06丢账不能重复外发；reserved无dispatchAt不能推定未发，数据缺口不能被事件摘要或裸seq掩盖。实模块在临时目录的恢复演练必需，单纯create/verify或Mock BackupService不能替代；真实物理磁盘损坏、独立故障域及跨OS未测须单列，不用模拟结果冒充。恢复许可故障窗口保持fail-closed，最后有效full不被ledger淘汰。全部以隔离样本运行，不自动撤销真实凭据、关机或发消息。
 
-### T19：轻量、显式依赖预检与跨模块验收【PENDING】
+### T19：轻量、显式依赖预检与跨模块验收【验收要求；现状见 §0】
 
 **依赖**：T10、T22。
 
@@ -457,7 +484,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 - 双根迁移在所有模块有未决状态时保留最新账本/素材/消息索引，禁旧任务/通知重投；禁用组件收尾落账无孤儿继续派发。
 - 本项自动回归使用 Mock 媒体；生产完成证据必须另引用 T17.3 真实 MP4/封面，不能替代该门槛。
 
-### T11：全量测试与代码审查【PENDING】
+### T11：全量测试与代码审查【验收要求；现状见 §0】
 
 **依赖**：T19、T22、T17.3。
 
@@ -467,7 +494,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：自动测试全部通过、无未处理rejection、无真实服务调用或真实用户目录写入，不用skip掩盖未完成。T17.3真实媒体与T22真实本地模块的隔离灾备演练均为必需；工具不足仅单列已完成离线结果，不能关闭完整T11门槛。IM契约必需，T16.2/T12.1可有明确外部BLOCKED，但必须进入交付矩阵。区分备份文件verify、只读数据恢复和外发解冻，不把任一阶段冒充灾备全恢复；真实故障域/介质/跨OS与真实平台另外列明。T11须以T19/T22/T17.3等全部明示验收为前提，任何单项结束都不代表全量完成。
 
-### T12：真实宿主/平台分项人工验收【T12.1 DONE；T12.2/T12.3 BLOCKED】
+### T12：真实宿主/平台分项人工验收【验收要求；现状见 §0】
 
 **依赖**：T12.1、T12.2、T12.3。
 
@@ -475,7 +502,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **工作/验收**：分别报告每项证据与条件。真实 B 站写入可不授权、真实跨 OS 可缺环境，但必须如实未实测；真实 IM 是桥接能力的完成门槛。**本地真实视频不是本项可选测试，归 T17.3 必需。**
 
-#### T12.1：真实 IM 入站、人工审批/拒绝与回信【DONE，拒绝路径】
+#### T12.1：真实 IM 入站、人工审批/拒绝与回信【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，DONE，拒绝路径）**：真实 IM 入站 + 持久草稿 Task + 本地 TTY 人类拒绝 + outbox 真实状态回信已全链路验证：入站 `msg:1750364829`（comment.draft）→ `task_15f7069d709d408bb9b758d15b068647`（waiting_approval）→ TTY reject（`approval_9e929107db9143e2b2c01bd39a91ee2b`，decidedBy 本地 owner）→ Task failed → 两条真实回信 `externalId=790450181`（waiting_approval）/`191643848`（failed），OneBot `get_msg` 复核通过；IM 侧 approval.decide 负例被 `TRUST_UNAVAILABLE` fail-closed（无副作用）。全程无 B 站平台写入。详见 `report/T12_1_IM_APPROVAL_LOOP_2026-11-10.md`。approve 路径/真实评论写入仍属 T12.2 未实测范围。
 
@@ -487,7 +514,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：FR-IM-008。必须有真实入站、人类来源、原 Task 决策和授权状态回信证据；审批 fail-closed 的负例也留证。无授权不发消息，标未实测；无宿主/人类证明标 BLOCKED。契约 Mock、只读探测、HTTP 自造 envelope 都不能替代本项，未通过不得称真实 IM 全功能完成。
 
-#### T12.2：真实 B 站/External 发布验收（可选授权）【BLOCKED】
+#### T12.2：真实 B 站/External 发布验收（可选授权）【验收要求；现状见 §0】
 
 **实现状态（2026-11-10，DM 单动作已真实验收，整体仍 BLOCKED）**：owner 在真实 TTY 中按 `scripts/acceptance/real-dm.mjs` 完成 1 条白名单私信真实写入：收件人 508187015、文本 `hello`、保护点 `backup_2aff9a1b172148d29240c81743da421c`（protected，age 11.8s）、task `task_f6ad8b41f0744c5f881eb746521ba576` succeeded、operation `op_d2f63521d5e1470da2c8e125403003bf` confirmed、receipt `externalId=7706537081688760000 verification=platform_readback`，并用只读 `svr_sync/fetch_session_msgs` 回读确认平台存在该条消息（2026-11-10T13:39:49Z，sender=3546827282450731）。过程中还修复了 DM preflight/dispatch 重复读、`send_msg` 的 UUID `dev_id`/`sender_uid`、平台拒绝码 not_sent 归类与写配额归还（详见 `report/DM_UNKNOWN_OP_EVIDENCE_2026-11-10.md`）。评论、External 投稿、Manual Bundle 发布仍未实测；备份目标与 C: 同盘（非独立故障域），恢复演练未做，故 T12.2 其余部分保持 **BLOCKED**。
 
@@ -499,7 +526,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：记录真实回执/verification 与接口差异；Manual 断言和 publisher_receipt 不称平台读回，Bundle 不称已发布，超时不重试。未授权保持未实测，不削弱 T11 自动安全验收；外发内容保留/删除由用户决定，不自动清理。
 
-#### T12.3：真实 Windows/Linux 停机搬迁（环境条件项）【BLOCKED】
+#### T12.3：真实 Windows/Linux 停机搬迁（环境条件项）【验收要求；现状见 §0】
 
 **依赖**：T11、T18；另需两系统、受控测试目录和本地人类交接条件。
 
@@ -509,7 +536,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **验收**：记录系统/路径/工具差异及票据，源重启仍禁写，旧Task/outbox不重放，正常迁移不解除既有恢复hold。缺两系统则明确“路径/双目录模拟通过，真实跨OS未实测”；两个本地目录也不证明独立物理故障域或真实磁盘损坏恢复。
 
-### T13：分项交付说明【PENDING】
+### T13：分项交付说明【验收要求；现状见 §0】
 
 **依赖**：T11、T12.1、T12.2、T12.3、T22。每个分项必须已有明确 PASS 或带原因/证据的 BLOCKED/未实测记录后才可汇总；外部真实项 BLOCKED 不阻止 T13 完成受限交付说明，但禁止宣称全功能交付，也不是免除 T17.3 的替代条件。
 
@@ -895,7 +922,9 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 不引入向量数据库、嵌入服务或外部记忆 SaaS；不做跨插件/跨项目共享记忆、人格养成或情绪状态机；不把记忆当作授权、审批凭据或事实权威；不在本轮把 §9 记忆机制写入 DESIGN/SPEC，不修改 config/代码，仅修正规划文本内部术语与跨文档同步状态。
 
-## 10. 实施记录（2026-11-07，本工作区）
+## 10. 历史实施记录（2026-11-07 至 2026-11-09）
+
+> 以下为各历史轮次原始快照，含当时的工具、测试数和阻塞判断；不代表 2026-11-11 当前状态。唯一现行状态为 §0，不能以本节旧 DONE/未实测覆盖后续证据。
 
 > 本节记录本轮代码实施与验证结果，不修改 §1 的 GATE-0/GATE-MEM 原始审核结论。用户在本轮明确要求按 0.2.1-draft 实施；该指令被视为本工作区的代码实施授权，但不构成真实 B 站写入、真实 IM、外部发布器、媒体工具执行或备份目的地/故障域授权。真实外部项仍按原任务表保持 BLOCKED/未实测。
 

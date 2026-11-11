@@ -412,7 +412,7 @@ export class ProductionModule {
     const state = await this.store.getSnapshot();
     const task = state.tasks[taskId];
     if (!task) throw new AppError('FORBIDDEN', 'production task not found');
-    if (!['interrupted', 'failed', 'partial', 'unknown'].includes(task.status)) {
+    if (!['interrupted', 'failed', 'partial', 'unknown', 'waiting_approval'].includes(task.status)) {
       throw new AppError('FORBIDDEN', `task status ${task.status} cannot be resumed`);
     }
     for (const executionId of task.executionIds || []) {
@@ -447,17 +447,21 @@ export class ProductionModule {
           entry.evidence = null;
         }
       }
-      this.taskManager.transition(tx, current, 'running', {
-        manual: true,
-        verified: true,
-        actor: principal.id,
-        reason: 'human resume verified old executions stopped'
-      });
-      current.attempts += 1;
-      this.taskManager.transition(tx, current, 'waiting_approval', {
-        actor: principal.id,
-        reason: 'resume requires fresh approval'
-      });
+      if (current.status === 'waiting_approval') {
+        this.taskManager.renewApproval(tx, current, { actor: principal.id });
+      } else {
+        this.taskManager.transition(tx, current, 'running', {
+          manual: true,
+          verified: true,
+          actor: principal.id,
+          reason: 'human resume verified old executions stopped'
+        });
+        current.attempts += 1;
+        this.taskManager.transition(tx, current, 'waiting_approval', {
+          actor: principal.id,
+          reason: 'resume requires fresh approval'
+        });
+      }
       const created = this.approvalService.create(tx, {
         task: current,
         action: 'production.run',

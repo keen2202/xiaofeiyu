@@ -7,7 +7,7 @@
 - 设计依据：`DESIGN.md`
 - 实施拆解：`TASKS.md`（0.2.1-draft；新增灾备条款、账本 v3、FR-DR-001～010 与 T20～T22 已同步到任务表）
 
-本文使用“必须/可以/不得”表示约束强度；“必须/不得”为强制要求，“可以”为明确允许的可选行为。§4.3 的普通业务默认配置与 `config.example.json` 一致（2026-11-09 增补 `browse.failureCooldownMinutes` 与 `browse.allowNoSubtitle`）；新增本地备份策略独立定义于 §27，不是已经接线的运行配置。核心与业务模块已在本工作区实现并有离线测试；真实环境验收统一受 FR-DR-002 和 TASKS T12.1/T12.2 的强制前置约束。离线测试通过不表示任何真实平台写入、真实 IM、媒体工具执行或备份执行已获授权或已验证。
+本文使用“必须/可以/不得”表示约束强度；“必须/不得”为强制要求，“可以”为明确允许的可选行为。§4.3 的普通业务默认配置与 `config.example.json` 一致（2026-11-09 增补 `browse.failureCooldownMinutes` 与 `browse.allowNoSubtitle`）；本地备份策略独立定义于 §27，已接线到 BackupPolicyService；当前实施和验收状态以 TASKS §0 为准。核心与业务模块已在本工作区实现并有离线测试；真实环境验收统一受 FR-DR-002 和 TASKS T12.1/T12.2 的强制前置约束。离线测试通过不表示任何真实平台写入、真实 IM、媒体工具执行或备份执行已获授权或已验证。
 
 本版采用“轻核心＋可选适配器＋独立生产执行”。本期跨端能力为同插件兼容格式的停机迁移；远程执行、X 和抖音只保留契约与测试替身，不实现常驻服务或平台 SDK。
 
@@ -127,6 +127,8 @@ dsh-bili-unified/
 4. 明确的环境变量；
 5. 单次调用的显式参数（不得持久化秘密）。
 
+ConfigService 加载、热更新和 configIntent 恢复必须采用同一合并顺序。持久化只修改用户 JSON 层，不把注入配置或环境覆盖值写回文件；intent 分别绑定文件层 hash 和生效配置 hash。
+
 Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或对应环境变量读取。
 
 ### 4.2 路径
@@ -206,6 +208,7 @@ Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或
   "im": {
     "enabled": false,
     "adapterId": "dsh-im",
+    "transport": "dsh-im",
     "maxMessageAgeSec": 600,
     "approvalTtlSec": 600,
     "groupReplies": "summary",
@@ -213,6 +216,13 @@ Cookie 和 Agent API Key 不从普通配置返回。Cookie 仅从凭据文件或
       "enabled": false,
       "minGapMs": 1500,
       "perMinute": 20
+    },
+    "onebot": {
+      "baseUrl": "",
+      "websocketUrl": "",
+      "accessTokenEnv": "ONEBOT_ACCESS_TOKEN",
+      "timeoutMs": 10000,
+      "reconnectMs": 5000
     }
   },
   "artifacts": {
@@ -1074,7 +1084,7 @@ unknown及recovery错误不能被通用重试器解释为重派许可。副作�
 | R-14 | 一致账本恢复点与媒体分层备份，独立故障域、保留策略、过期保护及可测RPO/RTO |
 | R-15 | 灾备只读恢复、新historyEpoch、缺口冻结、旧写者隔离与证据驱动的分范围解冻 |
 
-0.2.1新增R-14/R-15及FR-DR-001～010；TASKS已同步T20～T22、52条新增FR映射及账本v3接线计划，示例配置未修改。独立备份策略实现、代码接线及相应测试仍须在审核通过后完成，不能仅凭任务映射宣布本增补已实施。
+0.2.1新增R-14/R-15及FR-DR-001～010；TASKS已同步T20～T22、52条新增FR映射及账本v3接线计划，示例配置已同步当前 config.example.json。独立备份策略、代码接线及离线测试已实现；真实介质验收另见 TASKS §0。
 
 需实施前验证的外部前提：DSH实际服务注册/人类证明/消息语义、B站接口回执、选定本地媒体工具与外部发布器。无法验证时明确 BLOCKED/未实测；不能自行放宽授权、冒充成功或扩大到新平台。旧插件配置/账本导入与本插件停机迁移不同，本期不提供前者。
 
@@ -1120,10 +1130,13 @@ JCS "你好"（normalized-text-hash）
 
 - `FR-IM-001`：桥接来源与终端用户授权分开验证。宿主受信消息形成 adapterId、botAccountId、conversationId、senderRef、eventId、occurredAt、command、mode；principal从受信桥接上下文和本地bindings推导，不能来自正文role/approved/actorKind。
 - 首版绑定包含 bindingId、adapterId、botAccountId、senderRef、允许conversationIds、principalId、scopes、revokedAt；只能本地人类绑定/撤销。群成员身份变化、未绑定或撤权后拒绝，不能因机器人进程受信而自动放行群成员。
-- 默认scopes为空。可显式授予 production.create、task.read.own、task.cancel.own、approval.decide.own；读取/取消/审批还需 task.principalId 或明确委派匹配。配置、秘密、执行器注册、迁移、人工补录、unknown核查不开放IM。
+- 默认scopes为空。可显式授予 comment.draft、production.create、task.read.own、task.cancel.own、approval.decide.own；读取/取消/审批还需 task.principalId 或明确委派匹配。配置、秘密、执行器注册、迁移、人工补录、unknown核查不开放IM。
 - 模型自然语言解析只形成候选草稿；system/scheduler/agent主体均无人工审批资格。评论auto及白名单DM可使用独立配置的服务主体动作授权，不能扩展为审批权。
 - 本地人类证明必须满足以下一种可验证机制：宿主签名的 human-interaction challenge；或受控交互 TTY 中展示绑定摘要后，由 owner 输入一次性挑战短语并完成当前 OS 会话的独立身份核验。挑战绑定 task/action/inputHash/principal/nonce/expires，一次性消费且禁止无人值守进程代答。普通body字段、nonce、同OS进程或--confirm本身都不是身份来源；TTY和宿主证明均不可用时，本地敏感管理及真实go保持BLOCKED，离线实现/测试不因此取消。
 - 本期威胁边界是不可信消息/模型/素材及进程崩溃，不声称抵抗拥有同一OS账户任意代码执行权限的恶意程序；需要该隔离时另行部署OS权限边界，不能把独立进程当沙箱。
+
+- 调度器使用 workspace 内稳定的 service/scheduler 主体，仅按已开启功能授予 browse.run、comment.draft、dm.send、diary.generate.own；开启私人日记时另授予 diary.generate.private（仅生成，不授予读取权）。不得授予 `*`、管理或人工审批权限。服务创建的待审批草稿仍归服务主体，审批指定已有本地人类；主体撤销后不得由调度 tick 自动重建。
+- Task 持久化创建时的 authorizationBindingId，后续状态回信目的地不改变执行授权来源。旧 Task 若缺此字段且来源不明，已有绑定按保守权限上限处理，不能自动升级为本地权限。预留及实际派发时重新核验主体、当前 scopes 和原绑定；Approval 另记录 decidedBindingId，批准者或批准绑定撤销后禁止未派发副作用。
 
 ### 22.2 命令入口与审批
 
@@ -1135,7 +1148,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 
 - `FR-IM-002`：幂等键为 adapterId＋botAccountId＋conversationId＋eventId，另保存命令hash和原taskId。无可靠eventId的通道只能受限只读；消息编辑不修改已接收任务，同键异内容拒绝。
 - 已登记重复消息核验当前访问权后返回原结果，不重新执行；新消息须校验可信发生时间，超过maxMessageAgeSec或异常未来时间拒绝。索引保留至少覆盖通道重投窗口和允许时间窗，未决任务索引不清理；迁移完整携带有效索引。
-- `FR-IM-003`：可执行动作白名单为生产草稿/干跑、本人任务查询、取消请求及受信人类审批。未经明确结构化确认的自然语言不得直接go；本期IM不能任意发送B站私信或创建已批准发布。
+- `FR-IM-003`：可执行动作白名单为评论草稿/干跑、生产草稿/干跑、本人任务查询、取消请求及受信人类审批。未经明确结构化确认的自然语言不得直接go；本期IM不能任意发送B站私信或创建已批准发布。
 - Approval={id,taskId,action,inputHash,taskRevision,principalId,nonceHash,expiresAt,decision,decidedAt,source}。只绑定一次批准对象；配置、权限、费用及输入变化均重新预检，修改输入必失效旧审批。
 - `FR-IM-004`：对同一审批同决定幂等，冲突决定拒绝；干跑不消费真实执行批准。批准过期、输入变更、主体撤权、迁机后的旧挑战一律拒绝；保留审计，不让Agent补写approved:true。
 - 所有等待审批状态都有原taskId的回流入口；生产批准仅允许生产，发布另有批准对象。ApprovalService 在事务中核验并消费挑战、更新Task/事件，实际派发仍执行§7二次栅栏检查。
@@ -1247,6 +1260,17 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - `FR-MIG-007`：activate须核对健康恢复点、无匹配RecoveryHold、本地导入摘要、源交接回执、目标ID及操作者对源端已停写的确认。先持久记录激活决定，再开放本机允许的派发能力；断电后按同migrationId幂等恢复，不重新覆盖最新账本。相同票据不同目标拒绝。
 - 交接回执及sha256用于本地受信流程的一致性检查，不宣称能认证任意网络来源或抵抗恶意owner伪造；无中心协调无法阻止绕流程复制后双启。
 
+#### 已激活目标的逐项能力重验
+
+`migration reauthorize <migrationId> --capabilities <逗号分隔能力> --data-dir <目标目录> --confirm` 仅由本地 owner 完成绑定请求的一次性人类挑战后执行。正式 validate 默认仅 core:read/core:write；重授权不替代 activate/source-stopped。
+
+- platform:bilibili：目标显式 account verify、当前凭据修订匹配、再次只读 whoami 得到相同稳定账号。
+- production:local：功能和本地执行开关、受信 profile 与工具绝对路径、ffmpeg/ffprobe 版本预检通过。
+- publish:manual：发布开启、目标账号核验；publish:external 另核对允许执行开关、successJson、绑定的普通可执行文件，不试发或自动执行发布器。
+- im：已绑定通道只读 probe 为 available，存在重新核验且未撤销的受众绑定；不发送探测消息。
+- 任一请求能力失败则整体拒绝。准备/提交绑定配置、账号、主体、受众修订及目标新鲜保护点；跨 state/instance 提交中断保持 prepared 禁派发，必须显式重新核验，不能继承上次未提交的授予。
+- 不清除恢复 hold，不自动运行旧 Task/outbox；本地 owner 可在新证明后恢复自身主体，受限内置调度主体重新绑定，其他导入主体/IM 绑定仍逐项重验。旧待审批评论/生产 Task 经显式 release-hold、resume 重新签发挑战；旧挑战不能复用。
+
 ### 25.4 恢复、回滚与不自动重放
 
 - `FR-MIG-008`：激活不自动重投旧queued/running任务、旧审批或旧outbox。旧任务置migrationHold，只有受信人类明确resume/重新批准后恢复安全阶段；unknown必须先核查。scheduler仍关闭，需另行本地启用。
@@ -1288,6 +1312,8 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - `FR-DR-002`：每次真实平台写（含External）、生产付费调用和IM发送的预留及实际派发前，必须核验owner确认的独立故障域、验证通过且未超龄的ledger或full恢复点，并确认无匹配RecoveryHold。无策略/无有效点为unprotected，过期或校验失败为degraded，禁止上述新派发；go、普通config、任务审批和测试配置不能覆盖。只读、配置诊断和不触及受影响历史的新免费本地工作可单独授权，不假称已受灾备保护。
 - 备份调度复用Coordinator的管理通道但有独立显式开关，不随Browse调度启用。`freezeCoordinator`在同一Store事务中线性化checkpointFence与migration.phase：仅migration.phase=active且无活跃case阻断时可开始常规备份；迁移prepare等待时新备份让位，已持栅栏者只能在截止边界收尾，崩溃且属主不明保持冻结。recovery.normal允许常规备份；readonly/reconciling只允许已校验副本经管理路径建点；blocked且数据可疑时禁止；restricted/released只允许已验证范围建点。任何新点都保留既有hold，不能洗白缺口；在途业务回执及必要归档收尾不受备份超龄阻断。
 
+- BackupPolicy 增加 `failureDomainVerification={independent,sourceRoot,destinationRoot,verifiedBy,verifiedAt}`。只有 owner 实际核验独立性、两个绝对路径与当前安装/目的地匹配、核验人与策略匹配、时间有效且非未来，才允许保护判定。旧策略缺字段、unknown 或 independent=false 可建备份但 status=unprotected；文字描述/盘符不提供授权。此字段是 owner 的声明，不是自动硬件认证。恢复点 manifest/index 绑定完整 policyRevision，策略修改后必须重新创建并验证点。
+
 ### 27.2 一致恢复点与媒体分层
 
 - `FR-DR-003`：备份必须是同一捕获边界的逻辑快照，不对正在变化的整个dataDir直接递归复制。创建backupId并短暂设置checkpointFence，禁止新派发、新Artifact/日记多文件提交和归档清理；允许已有提交/回执收尾。等待已有pendingImport/pendingCommit到达可恢复边界，再在排他事务中捕获账本及其引用清单。
@@ -1308,6 +1334,8 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - 每个完成点即时verify；启用策略期间至少每日复查最近有效ledger/full的必需文件摘要，完成一次隔离恢复演练后才标记restoreTested。保存lastVerifiedCutAt、lastBackupError、metadata/full覆盖、演练时间及RPO/RTO实测。
 - 清理使用明确计划并重新检查引用，按tier分别保底：不得删除最后一个有效账本恢复点（可由full承担）或最后一个有效full点，哪怕它们超出最近/日/周保留集合；也不能删除故障调查固定点、未完成恢复引用或尚需的共享对象。若从未有有效full，必须报告媒体未受完整保护，不能用ledger数量代替。
 - prune必须验证删除后的账本与媒体覆盖，不只检查是否还有ledger；即使full已超24小时目标，也保留最后可用full并报告过期，直至新的full验证通过。容量不足拒绝新备份/报告degraded，不先删唯一好备份腾空间，不自动删除业务源素材或原始证据。
+
+- 状态分别报告账本与媒体覆盖：`status/ageMs/maxPointAgeMinutes` 与 `mediaStatus/fullAgeMs/fullMaxAgeHours/mediaUnprotectedReason`。full 超龄为 degraded/full_recovery_point_stale；新 ledger 可以保护账本，但不能洗白媒体过期，最后可用 full 继续保留。
 
 ### 27.4 只读恢复与历史分支
 

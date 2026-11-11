@@ -818,7 +818,7 @@ test('IM pump timer drives pending notification delivery without manual pump', a
         kind: 'human',
         role: 'user',
         sourceKind: 'host_human_challenge',
-        scopes: [],
+        scopes: ['comment.draft'],
         workspaceId: draft.workspaceId
       });
       draft.principals[principal.id] = principal;
@@ -893,7 +893,7 @@ test('IM approval chain uses the real CommandService and executes the original t
         kind: 'human',
         role: 'user',
         sourceKind: 'host_human_challenge',
-        scopes: [],
+        scopes: ['comment.draft'],
         workspaceId: draft.workspaceId
       });
       draft.principals[principal.id] = principal;

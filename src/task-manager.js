@@ -129,6 +129,8 @@ export class TaskManager {
       id,
       workspaceId: tx.workspaceId,
       principalId: data.principalId,
+      authorizationBindingId: data.bindingId || this.store?.commandContext?.getStore()?.bindingId ||
+        tx.state.tasks[data.parentTaskId]?.authorizationBindingId || null,
       accountRef: data.accountRef ? deepClone(data.accountRef) : null,
       parentTaskId: data.parentTaskId || null,
       childTaskIds: [],
@@ -441,6 +443,18 @@ export class TaskManager {
       }
     });
     this.recompute(tx, task);
+    return task;
+  }
+
+  renewApproval(tx, taskOrId, { actor } = {}) {
+    const task = typeof taskOrId === 'string' ? this.get(tx, taskOrId) : taskOrId;
+    if (task.status !== 'waiting_approval') throw new AppError('APPROVAL_REQUIRED', 'task is not waiting for approval');
+    if ((task.holds || []).some(hold => hold.status !== 'released')) throw new AppError('RECOVERY_GAP', 'task has an active recovery/migration hold');
+    if (task.executionActive || task.hasUnknownOperation || task.pendingOperationIds?.length) {
+      throw new AppError('OPERATION_UNKNOWN', 'pending execution must be reconciled before renewing approval');
+    }
+    this.reviseInput(tx, task, {}, { actor });
+    task.attempts += 1;
     return task;
   }
 

@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHarness, bindMockAccount } from './helpers/harness.js';
+import { createHarness, bindMockAccount, makeMockAdapter, mockCandidate } from './helpers/harness.js';
+import { createRuntime } from '../src/index.js';
+import { main as cliMain } from '../cli.mjs';
+import { CommentsModule } from '../src/modules/comments.js';
+import { jcsHash } from '../src/utils.js';
+import { NAV_WBI, responseJson } from './helpers/mock-fetch.js';
 import { MigrationService, verifyMigrationPackage } from '../src/migration.js';
 import { DiaryModule } from '../src/modules/diary.js';
 import { nowIso } from '../src/utils.js';
@@ -72,9 +77,15 @@ async function createUnsettledState(harness) {
   return waiting;
 }
 
-async function fullFlow({ activate = true } = {}) {
+async function fullFlow({ activate = true, withComment = false } = {}) {
   const source = await setupSource();
   const waiting = await createUnsettledState(source.harness);
+  let comment = null;
+  if (withComment) {
+    await source.harness.configService.update({ comments: { enabled: true } }, { source: 'cli' });
+    const comments = new CommentsModule({ ...source.harness, adapter: makeMockAdapter() });
+    comment = await comments.createDraft({ candidate: mockCandidate(), text: 'migrated draft', principal: source.harness.owner });
+  }
   await source.diary.generate({
     date: '2026-11-07',
     scope: 'workspace/workspace_test',
@@ -156,7 +167,7 @@ async function fullFlow({ activate = true } = {}) {
   assert.ok(await fs.readFile(path.join(targetDir, 'artifacts', targetArtifact.relativePath)));
   const targetDiary = Object.values(targetState.diaries)[0];
   assert.ok(await fs.readFile(path.join(targetDir, 'diary', targetDiary.targetFile)));
-  return { source, waiting, exported, released, targetDir, targetMigration, imported, validated, activated };
+  return { source, waiting, comment, exported, released, targetDir, targetMigration, imported, validated, activated };
 }
 
 test('prepare/export/release/import/validate/activate preserves ledger, artifacts and holds', async () => {
@@ -170,6 +181,77 @@ test('prepare/export/release/import/validate/activate preserves ledger, artifact
     await flow.source.harness.cleanup();
     await fs.rm(flow.targetDir, { recursive: true, force: true });
   }
+});
+
+test('audit: target runtime and CLI reauthorize verified capabilities, retain holds and require fresh approval on resume', async () => {
+  const flow = await fullFlow({ withComment: true });
+  let runtime;
+  try {
+    let issued;
+    const verifier = { issue(binding) { issued = binding; return { challengeId: 'test' }; },
+      async verify(proof, binding) { return proof.response === 'test' && jcsHash(binding) === jcsHash(issued); } };
+    let reads = 0;
+    runtime = await createRuntime({ dataDir: flow.targetDir, now: flow.source.harness.now,
+      env: { BILI_SESSDATA: 'mock-session', BILI_JCT: 'mock-csrf' }, humanVerifier: verifier,
+      fetchImpl: async (url, options) => { assert.equal(options.method, 'GET'); assert.match(String(url), /\/nav/); reads++; return responseJson(NAV_WBI); },
+      logger: { warn() {}, info() {} } });
+    // Test-only protection fixture: no claim of real independent media.
+    runtime.migration.protection = flow.source.harness.protectionProvider;
+    await runtime.configService.update({ dryRun: false, comments: { enabled: true }, publishing: { enabled: true } }, { source: 'cli' });
+    await runtime.bindAccount();
+    flow.source.harness.now.advance(60000);
+    const migrationId = flow.released.migration.id;
+    const output = { chunks: [], write(value) { this.chunks.push(value); } };
+    const io = { stdout: output, stderr: output, prompt: async () => 'test', createRuntime: async () => ({ ...runtime, close: async () => {} }) };
+    await assert.rejects(cliMain(['migration', 'reauthorize', migrationId, '--capabilities', 'platform:bilibili', '--data-dir', flow.targetDir], io));
+    const args = ['migration', 'reauthorize', migrationId, '--capabilities', 'platform:bilibili,publish:manual', '--confirm', '--data-dir', flow.targetDir];
+    assert.equal(await cliMain(args, io), 0);
+    assert.equal(reads, 2); // explicit binding and one shared re-verification
+    const state = await runtime.store.getSnapshot();
+    const instance = await runtime.store.getInstance();
+    assert.ok(instance.allowedCapabilities.includes('platform:bilibili'));
+    assert.ok(instance.allowedCapabilities.includes('publish:manual'));
+    assert.equal(instance.allowedCapabilities.includes('im'), false);
+    assert.equal(state.migration.capabilityDecision.state, 'committed');
+    const task = state.tasks[flow.comment.task.id];
+    assert.equal(task.holds[0].status, 'active');
+    const owner = runtime.identity.findLocalOwner(state);
+    assert.equal(owner.requiresReverification, false);
+    const resumeArgs = ['task', 'resume', task.id, '--go', '--confirm', '--data-dir', flow.targetDir];
+    await assert.rejects(cliMain(resumeArgs, io), { code: 'RECOVERY_GAP' });
+    await cliMain(['migration', 'release-hold', task.holds[0].id, '--task', task.id, '--confirm', '--data-dir', flow.targetDir], io);
+    assert.equal(await cliMain(resumeArgs, io), 0);
+    const resumed = (await runtime.store.getSnapshot()).tasks[task.id];
+    assert.equal(resumed.status, 'waiting_approval');
+    assert.notEqual(resumed.input.approvalId, flow.comment.approval.id);
+    assert.equal((await flow.source.harness.store.getInstance()).status, 'retired');
+  } finally { await runtime?.close(); await flow.source.harness.cleanup(); await fs.rm(flow.targetDir, { recursive: true, force: true }); }
+});
+
+test('audit: capability crash remains blocked and a different retry cannot inherit the uncommitted grant', async () => {
+  const flow = await fullFlow();
+  let runtime;
+  try {
+    runtime = await createRuntime({ dataDir: flow.targetDir, env: {}, now: flow.source.harness.now,
+      humanVerifier: flow.source.harness.humanProof.verifier, fetchImpl: async () => { throw new Error('unexpected network'); },
+      logger: { warn() {}, info() {} } });
+    const migration = runtime.migration;
+    migration.protection = flow.source.harness.protectionProvider;
+    migration.activationChecks = async ({ requestedCapabilities }) => ({ capabilities: requestedCapabilities, blocked: [] });
+    const principal = runtime.identity.findLocalOwner(await runtime.store.getSnapshot());
+    const context = { principal, proof: { kind: 'test', ok: true } };
+    const migrationId = flow.released.migration.id;
+    migration.hooks.afterCapabilityInstance = () => { throw new Error('injected power loss'); };
+    await assert.rejects(migration.reauthorize({ migrationId, capabilities: ['platform:bilibili'] }, context), /injected power loss/);
+    assert.equal((await runtime.store.getSnapshot()).migration.capabilityDecision.state, 'prepared');
+    await assert.rejects(runtime.effectGateway.assertLocalDispatch({ capability: 'core:write' }), { code: 'MIGRATION_BLOCKED' });
+    migration.hooks.afterCapabilityInstance = null;
+    await migration.reauthorize({ migrationId, capabilities: ['publish:manual'] }, context);
+    const instance = await runtime.store.getInstance();
+    assert.ok(instance.allowedCapabilities.includes('publish:manual'));
+    assert.equal(instance.allowedCapabilities.includes('platform:bilibili'), false);
+    assert.equal((await runtime.store.getSnapshot()).migration.capabilityDecision.state, 'committed');
+  } finally { await runtime?.close(); await flow.source.harness.cleanup(); await fs.rm(flow.targetDir, { recursive: true, force: true }); }
 });
 
 test('export is idempotent and abort invalidates an unsealed package', async () => {

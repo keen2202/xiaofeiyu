@@ -323,7 +323,7 @@ export class CommentsModule {
     const task = state.tasks[taskId];
     if (!task) throw new AppError('FORBIDDEN', 'comment task not found');
     if (task.kind !== 'comment') throw new AppError('INPUT_REQUIRED', 'task is not a comment task');
-    if (!['interrupted', 'failed', 'partial', 'unknown'].includes(task.status)) {
+    if (!['interrupted', 'failed', 'partial', 'unknown', 'waiting_approval'].includes(task.status)) {
       throw new AppError('FORBIDDEN', `task status ${task.status} cannot be resumed`);
     }
     if (task.executionActive) throw new AppError('OPERATION_UNKNOWN', 'previous comment execution is still active');
@@ -348,19 +348,23 @@ export class CommentsModule {
     }
     const challenge = await this.store.transaction(async (draft, tx) => {
       const current = draft.tasks[taskId];
-      if (!['interrupted', 'failed', 'partial', 'unknown'].includes(current.status)) {
+      if (!['interrupted', 'failed', 'partial', 'unknown', 'waiting_approval'].includes(current.status)) {
         throw new AppError('IDEMPOTENCY_CONFLICT', 'task status changed during resume');
       }
-      this.taskManager.resume(tx, current, {
-        manual: true,
-        verified: true,
-        actor: principal.id,
-        reason: 'human verified old comment attempt stopped'
-      });
-      this.taskManager.transition(tx, current, 'waiting_approval', {
-        actor: principal.id,
-        reason: 'comment resume requires fresh approval'
-      });
+      if (current.status === 'waiting_approval') {
+        this.taskManager.renewApproval(tx, current, { actor: principal.id });
+      } else {
+        this.taskManager.resume(tx, current, {
+          manual: true,
+          verified: true,
+          actor: principal.id,
+          reason: 'human verified old comment attempt stopped'
+        });
+        this.taskManager.transition(tx, current, 'waiting_approval', {
+          actor: principal.id,
+          reason: 'comment resume requires fresh approval'
+        });
+      }
       const created = this.approvalService.create(tx, {
         task: current,
         action: 'comment.send',

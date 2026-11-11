@@ -50,7 +50,9 @@ export async function createHarness({
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-test-'));
   const config = deepMerge(DEFAULT_CONFIG, overrides);
   config.dataDir = dir;
-  const configService = new ConfigService({ dataDir: dir, injected: config, env: {}, now });
+  const configFile = path.join(dir, 'config.json');
+  await fs.writeFile(configFile, JSON.stringify(config));
+  const configService = new ConfigService({ dataDir: dir, file: configFile, env: {}, now });
   const loaded = await configService.load();
   const store = new JsonStore({
     file: loaded.paths.stateFile,

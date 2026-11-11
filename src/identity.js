@@ -9,7 +9,7 @@ import {
 } from './utils.js';
 
 export const PRINCIPAL_KINDS = Object.freeze(['human', 'agent', 'service', 'system']);
-// FR-IM-003 whitelist: production draft/dry-run, own task query, cancel and
+// FR-IM-003 whitelist: comment/production draft/dry-run, own task query, cancel and
 // trusted human approval only. task.resume.own is deliberately not an IM
 // binding scope: local/host human entries own the resume capability.
 export const IM_SCOPES = Object.freeze([
@@ -26,6 +26,7 @@ export const KNOWN_SCOPES = Object.freeze([
   'browse.run',
   'diary.read.own',
   'diary.generate.own',
+  'diary.generate.private',
   'dm.send',
   'publish.create',
   'artifact.import',
@@ -33,6 +34,43 @@ export const KNOWN_SCOPES = Object.freeze([
 ]);
 
 export const LOCAL_OWNER_SCOPES = Object.freeze(['*']);
+
+const TASK_SCOPES = Object.freeze({ browse: 'browse.run', comment: 'comment.draft', dm: 'dm.send',
+  diary: 'diary.generate.own', production: 'production.create', publish: 'publish.create' });
+
+// Read current ledger authority at the dispatch boundary, never a caller's cached principal.
+export function assertTaskAuthority(state, task) {
+  const principal = state.principals?.[task?.principalId];
+  if (!task || !principal || principal.revokedAt || principal.requiresReverification ||
+      (principal.workspaceId && principal.workspaceId !== state.workspaceId)) {
+    throw new AppError('FORBIDDEN', 'task principal is unavailable or requires re-verification');
+  }
+  const scope = TASK_SCOPES[task.kind];
+  const isImTask = task.sourceKind === 'im' || task.trigger === 'im';
+  // Legacy tasks did not record the creation binding separately. When their
+  // provenance is ambiguous, retain the existing binding as a conservative
+  // ceiling; newly created local tasks explicitly record null instead.
+  const legacyAuthority = !Object.hasOwn(task, 'authorizationBindingId');
+  const bindingId = task.authorizationBindingId || ((isImTask || legacyAuthority) ? task.notificationTarget?.bindingId : null);
+  let scopes = principal.scopes || [];
+  if (bindingId) {
+    const binding = state.bindings?.[bindingId];
+    if (!binding || binding.revokedAt || binding.requiresReverification || binding.principalId !== principal.id) {
+      throw new AppError('FORBIDDEN', 'task binding is revoked or unavailable');
+    }
+    scopes = binding.scopes || [];
+    const conversationId = task.notificationTarget?.conversationId;
+    if (conversationId && !binding.conversationIds?.includes(conversationId)) {
+      throw new AppError('FORBIDDEN', 'task conversation is no longer authorized');
+    }
+  } else if (isImTask) {
+    throw new AppError('FORBIDDEN', 'IM task has no persistent authority binding');
+  }
+  if (scope && !scopes.includes('*') && !scopes.includes(scope)) {
+    throw new AppError('FORBIDDEN', `task principal lacks current scope ${scope}`);
+  }
+  return principal;
+}
 
 export function makePrincipal({
   id,
@@ -97,6 +135,23 @@ export class IdentityService {
       createdAt: nowIso(this.now)
     });
     tx.state.principals[principal.id] = principal;
+    return principal;
+  }
+
+  ensureScheduler(tx, config) {
+    const id = `service_scheduler_${tx.workspaceId}`;
+    const current = tx.state.principals[id];
+    if (current?.revokedAt || current?.requiresReverification) throw new AppError('FORBIDDEN', 'scheduler principal is revoked');
+    const scopes = [
+      ...(config.browse.enabled ? ['browse.run'] : []),
+      ...(config.comments.enabled ? ['comment.draft'] : []),
+      ...(config.directMessages.enabled ? ['dm.send'] : []),
+      ...(config.diary.enabled ? ['diary.generate.own'] : []),
+      ...(config.diary.enabled && config.diary.privateBook ? ['diary.generate.private'] : [])
+    ];
+    const principal = makePrincipal({ id, kind: 'service', sourceKind: 'scheduler', role: 'scheduler',
+      workspaceId: tx.workspaceId, scopes, displayName: 'configured scheduler', createdAt: current?.createdAt || nowIso(this.now) });
+    tx.state.principals[id] = principal;
     return principal;
   }
 

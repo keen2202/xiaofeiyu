@@ -190,7 +190,7 @@ test('I2 remote config updates require expectedRevision and reject stale revisio
     assert.equal(after.configRevision.version, before.configRevision.version);
     assert.equal(after.configIntent, null);
     assert.equal(await pathExists(nextFile), false);
-    assert.equal(await pathExists(harness.paths.configFile), false);
+    assert.equal(JSON.parse(await fs.readFile(harness.paths.configFile, 'utf8')).browse.enabled, false);
   } finally {
     await harness.cleanup();
   }
@@ -271,7 +271,7 @@ test('I2 a caught update failure rolls the staged file and intent back', async (
     assert.equal(after.configRevision.sha256, before.configRevision.sha256);
     assert.equal(after.configIntent, null);
     assert.equal(await pathExists(`${harness.paths.configFile}.next`), false);
-    assert.equal(await pathExists(harness.paths.configFile), false);
+    assert.equal(JSON.parse(await fs.readFile(harness.paths.configFile, 'utf8')).browse.enabled, false);
     assert.equal(eventsOfType(after, 'config.update.prepared').length, 1);
     assert.equal(eventsOfType(after, 'config.update.aborted').length, 1);
   } finally {

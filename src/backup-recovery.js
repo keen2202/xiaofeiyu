@@ -41,6 +41,7 @@ export const DEFAULT_BACKUP_POLICY = Object.freeze({
   scheduleEnabled: false,
   destinationRoot: '',
   failureDomain: '',
+  failureDomainVerification: null,
   verifiedBy: '',
   verifiedAt: null,
   intervalMinutes: 15,
@@ -62,6 +63,17 @@ export function validateBackupPolicy(policy, { dataDir = null, requireDestinatio
     throw new AppError('SCHEMA_UNSUPPORTED', 'backup policy schemaVersion must be 1');
   }
   if (typeof merged.scheduleEnabled !== 'boolean') throw new AppError('CONFIG_INVALID', 'scheduleEnabled must be boolean');
+  const verification = merged.failureDomainVerification;
+  if (verification !== null) {
+    const keys = ['independent', 'sourceRoot', 'destinationRoot', 'verifiedBy', 'verifiedAt'];
+    if (typeof verification !== 'object' || Array.isArray(verification) ||
+        Object.keys(verification).some(key => !keys.includes(key)) || typeof verification.independent !== 'boolean' ||
+        !keys.slice(1).every(key => typeof verification[key] === 'string' && verification[key].trim()) ||
+        !path.isAbsolute(verification.sourceRoot) || !path.isAbsolute(verification.destinationRoot) ||
+        !Number.isFinite(Date.parse(verification.verifiedAt))) {
+      throw new AppError('CONFIG_INVALID', 'failureDomainVerification requires explicit independence, roots, verifier and time');
+    }
+  }
   if (requireDestination || merged.scheduleEnabled) {
     if (typeof merged.destinationRoot !== 'string' || !path.isAbsolute(merged.destinationRoot)) {
       throw new AppError('CONFIG_INVALID', 'backup destinationRoot must be an absolute path');
@@ -819,6 +831,8 @@ export class BackupService {
         ],
         failureDomain: policy.failureDomain,
         failureDomainVerifiedBy: policy.verifiedBy,
+        policyRevision: jcsHash(policy),
+        failureDomainVerification: policy.failureDomainVerification,
         pendingExcluded: capture.pendingExcluded || [],
         parentRecovery: capture.parentRecovery || null,
         createdAt: startedAt,
@@ -865,6 +879,7 @@ export class BackupService {
         snapshotHash: manifest.snapshotHash,
         failureDomain: manifest.failureDomain,
         failureDomainVerifiedBy: manifest.failureDomainVerifiedBy,
+        policyRevision: manifest.policyRevision,
         journalCoverage: manifest.journalCoverage,
         mediaCoverage: manifest.mediaCoverage,
         pendingExcluded: manifest.pendingExcluded || [],
@@ -1149,8 +1164,7 @@ export class BackupService {
       lastDailyVerifyDate: index.lastDailyVerifyDate || null,
       lastDailyVerifyAt: index.lastDailyVerifyAt || null,
       lastError: index.lastError || null,
-      mediaUnprotected: latestFull === null,
-      mediaUnprotectedReason: latestFull === null ? 'no_verified_full_recovery_point' : null
+      ...this._mediaProtection(latestFull, policy)
     };
   }
 
@@ -1163,20 +1177,22 @@ export class BackupService {
       if (!(await pathExists(policy.destinationRoot))) {
         return { status: 'unprotected', reason: 'destination_unavailable' };
       }
+      const verification = policy.failureDomainVerification;
+      if (!verification?.independent || !this.dataDir ||
+          path.resolve(verification.sourceRoot) !== path.resolve(this.dataDir) ||
+          path.resolve(verification.destinationRoot) !== path.resolve(policy.destinationRoot) ||
+          verification.verifiedBy !== policy.verifiedBy || Date.parse(verification.verifiedAt) > this.now().getTime()) {
+        return { status: 'unprotected', reason: 'independent_failure_domain_not_verified' };
+      }
       const index = await this._readIndex(policy);
       const points = Object.values(index.backups)
-        .filter((entry) => entry.status === 'verified')
+        .filter((entry) => entry.status === 'verified' && entry.policyRevision === jcsHash(policy))
         .sort((a, b) => String(b.cutAt).localeCompare(String(a.cutAt)));
       if (points.length === 0) return { status: 'unprotected', reason: 'no_verified_recovery_point' };
       const latest = points[0];
       const latestFull = points.find((entry) => entry.kind === 'full') || null;
       const ageMs = Math.max(0, this.now().getTime() - Date.parse(latest.cutAt));
-      const mediaStatus = {
-        mediaUnprotected: latestFull === null,
-        mediaUnprotectedReason: latestFull === null ? 'no_verified_full_recovery_point' : null,
-        latestFullBackupId: latestFull?.backupId || null,
-        latestFullCutAt: latestFull?.cutAt || null
-      };
+      const mediaStatus = this._mediaProtection(latestFull, policy);
       if (ageMs > policy.maxPointAgeMinutes * 60 * 1000) {
         return {
           status: 'degraded',
@@ -1201,6 +1217,20 @@ export class BackupService {
     } catch (error) {
       return { status: 'invalid', reason: error.code || 'BACKUP_INVALID', message: error.message };
     }
+  }
+
+  _mediaProtection(latestFull, policy) {
+    const ageMs = latestFull ? Math.max(0, this.now().getTime() - Date.parse(latestFull.cutAt)) : null;
+    const stale = latestFull !== null && ageMs > policy.fullIntervalHours * 3600000;
+    return {
+      mediaUnprotected: !latestFull || stale,
+      mediaUnprotectedReason: !latestFull ? 'no_verified_full_recovery_point' : stale ? 'full_recovery_point_stale' : null,
+      mediaStatus: !latestFull ? 'unprotected' : stale ? 'degraded' : 'protected',
+      fullAgeMs: ageMs,
+      fullMaxAgeHours: policy.fullIntervalHours,
+      latestFullBackupId: latestFull?.backupId || null,
+      latestFullCutAt: latestFull?.cutAt || null
+    };
   }
 
   async _activeRecoveryRefs() {

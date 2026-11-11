@@ -13,9 +13,11 @@ async function setup() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-dsh-'));
   const config = structuredClone(DEFAULT_CONFIG);
   config.dataDir = dir;
+  const configFile = path.join(dir, 'config.json');
+  await fs.writeFile(configFile, JSON.stringify(config));
   let fetchCalls = 0;
   const runtime = await createRuntime({
-    config,
+    configFile,
     dataDir: dir,
     env: {},
     now: () => new Date('2026-11-07T00:00:00Z'),

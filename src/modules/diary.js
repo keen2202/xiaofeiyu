@@ -83,7 +83,7 @@ export class DiaryModule {
     throw new AppError('FORBIDDEN', 'scope must be account/<platform>/<accountId> or workspace/<workspaceId>');
   }
 
-  async _authorize(scope, book, principal, snapshot) {
+  async _authorize(scope, book, principal, snapshot, { reading = false } = {}) {
     if (!principal || principal.revokedAt) throw new AppError('FORBIDDEN', 'diary generation requires a principal');
     if (scope.kind === 'workspace' && scope.workspaceId !== snapshot.workspaceId) {
       throw new AppError('FORBIDDEN', 'workspace scope does not match this workspace');
@@ -99,7 +99,10 @@ export class DiaryModule {
       principal.scopes?.includes('diary.read.own');
     if (!hasScope) throw new AppError('FORBIDDEN', 'principal lacks diary scope');
     if (book === 'private') {
-      if (principal.kind !== 'human' || !isOwner) {
+      const generator = !reading && principal.kind === 'service' && principal.sourceKind === 'scheduler' &&
+        snapshot.principals[principal.id]?.scopes?.includes('diary.generate.private') &&
+        !snapshot.principals[principal.id]?.revokedAt;
+      if (!generator && (principal.kind !== 'human' || !isOwner)) {
         throw new AppError('FORBIDDEN', 'private diaries are restricted to the local owner');
       }
       if (!this._config().diary.privateBook) throw new AppError('FEATURE_DISABLED', 'private diary is disabled');
@@ -884,7 +887,7 @@ export class DiaryModule {
     if (!isValidDateString(date)) throw new AppError('INPUT_REQUIRED', 'date must be YYYY-MM-DD');
     const snapshot = await this.store.getSnapshot();
     const scope = this._parseScope(rawScope);
-    await this._authorize(scope, book, principal, snapshot);
+    await this._authorize(scope, book, principal, snapshot, { reading: true });
     const diaryId = this._diaryId(snapshot, scope, date, book);
     const entry = snapshot.diaries[diaryId];
     if (!entry) throw new AppError('DEPENDENCY_UNAVAILABLE', 'diary has not been generated');

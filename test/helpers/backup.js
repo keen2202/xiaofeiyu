@@ -21,6 +21,8 @@ export async function setupBackup({ harnessOptions = {}, policy = {}, backupServ
     destinationRoot,
     failureDomain: 'test-independent-filesystem',
     verifiedBy: 'test-owner',
+    failureDomainVerification: { independent: true, sourceRoot: harness.dir, destinationRoot,
+      verifiedBy: 'test-owner', verifiedAt: harness.now().toISOString() },
     ...policy
   });
   const backup = new BackupService({

@@ -635,7 +635,7 @@ export async function loadConfigFile(file, options = {}) {
     }
     if (!isPlainObject(raw)) throw new AppError('CONFIG_INVALID', 'config file must contain an object');
   }
-  const merged = deepMerge(deepMerge(DEFAULT_CONFIG, options.injected || {}), raw);
+  const merged = deepMerge(deepMerge(DEFAULT_CONFIG, raw), options.injected || {});
   const withEnv = applyEnvOverrides(merged, env);
   return validateConfig(withEnv);
 }
@@ -649,7 +649,7 @@ async function readValidatedConfigText(file) {
   try {
     if (!(await pathExists(file))) return null;
     const parsed = JSON.parse(await fsp.readFile(file, 'utf8'));
-    validateConfig(parsed);
+    validateConfig(deepMerge(DEFAULT_CONFIG, parsed));
     return parsed;
   } catch {
     return null;
@@ -754,6 +754,12 @@ export class ConfigService {
     return source === 'http' || source === 'command';
   }
 
+  _effectiveConfig(raw) {
+    const config = validateConfig(applyEnvOverrides(deepMerge(deepMerge(DEFAULT_CONFIG, raw), this.injected), this.env));
+    if (this.dataDir) config.dataDir = this.dataDir;
+    return config;
+  }
+
   async _reloadConfigFromFile() {
     if (!this.file) return;
     this.config = await loadConfigFile(this.file, { env: this.env, injected: this.injected });
@@ -809,13 +815,13 @@ export class ConfigService {
       return this._discardConfigIntent({ intent, nextFile, reason: 'unreadable_candidate' });
     }
     const candidateHash = computeConfigHash(candidate);
-    if (candidateHash !== intent.nextSha256) {
+    if (candidateHash !== (intent.fileSha256 || intent.nextSha256)) {
       return this._discardConfigIntent({ intent, nextFile, reason: 'hash_mismatch' });
     }
     if (source === 'next_file') {
       await fsp.rename(nextFile, this.file);
     }
-    return this._commitReconciledRevision(intent, candidate, source);
+    return this._commitReconciledRevision(intent, this._effectiveConfig(candidate), source);
   }
 
   async _commitReconciledRevision(intent, config, action) {
@@ -939,7 +945,11 @@ export class ConfigService {
         }
       }
     }
-    const merged = deepPatch(previous, patch);
+    // Persist only the file layer. Host/env constraints remain authoritative
+    // immediately, after restart and after recovery of an interrupted update.
+    const raw = this.file ? (await readValidatedConfigText(this.file)) : null;
+    const persisted = deepPatch(raw || {}, patch);
+    const merged = this._effectiveConfig(persisted);
     if (merged.production.requireApproval !== true) {
       throw new AppError('CONFIG_INVALID', 'production.requireApproval cannot be disabled');
     }
@@ -949,6 +959,7 @@ export class ConfigService {
     validateConfig(merged);
     const hash = computeConfigHash(merged);
     const paths = resolvePaths(merged, this.env);
+    if (this.file) paths.configFile = this.file;
     await ensureDir(path.dirname(paths.configFile));
     const nextFile = `${paths.configFile}.next`;
     let intent = null;
@@ -956,7 +967,7 @@ export class ConfigService {
     let previousText = null;
     let committed = false;
     try {
-      await atomicWriteJson(nextFile, merged, { mode: 0o600 });
+      await atomicWriteJson(nextFile, persisted, { mode: 0o600 });
       if (this.store) {
         this.hooks.afterStageNext?.({ file: paths.configFile, nextFile });
         intent = await this.store.transaction(async (draft, tx) => {
@@ -974,6 +985,7 @@ export class ConfigService {
             phase: 'prepared',
             nextVersion: currentVersion + 1,
             nextSha256: hash,
+            fileSha256: computeConfigHash(persisted),
             nextFile: path.resolve(nextFile),
             prevSha256: draft.configRevision?.sha256 || '',
             at: nowIso(this.now)

@@ -455,7 +455,8 @@ test('read retries consume a second ledger read slot', async () => {
       fetchImpl,
       now: harness.now,
       store: harness.store,
-      rateLimiter: harness.rateLimiter
+      rateLimiter: harness.rateLimiter,
+      sleep: async ms => { harness.now.advance(ms); }
     });
     await client.whoami();
     assert.equal(reads, 2);

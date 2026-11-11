@@ -279,7 +279,8 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         'node cli.mjs operation cancel <id> --reason <text> --confirm',
         'node cli.mjs outbox resolve <id> confirmed|not_sent --receipt <json> --note <note> --confirm',
         'node cli.mjs im bind --file <json> --confirm | im revoke <binding-id> --confirm | im probe | im listen [--seconds N] | im status [--probe]',
-        'node cli.mjs migration <prepare|export|release|import|validate|activate|status|abort|disable-target|rollback|release-hold> ...',
+        'node cli.mjs migration <prepare|export|release|import|validate|activate|reauthorize|status|abort|disable-target|rollback|release-hold> ...',
+        'node cli.mjs migration reauthorize <id> --capabilities <comma-separated capabilities> --data-dir <dir> --confirm',
         '  prepare --target <instance> [--executor-stop-evidence <text>] --confirm; activate <id> --receipt <file> --source-stopped --confirm',
         '  release-hold <hold-id> --task <task-id> --note <note> --confirm',
         'node cli.mjs backup <policy|create|verify|status|record-restore|prune> ...',
@@ -828,6 +829,15 @@ export async function main(argv = process.argv.slice(2), io = {}) {
           { holdId, taskId: flags.task || null, note: flags.note || '' },
           context
         ));
+        return 0;
+      }
+      if (sub === 'reauthorize') {
+        requireConfirm(flags, 'migration reauthorize');
+        if (!runtime.migration?.reauthorize) throw waitingFor('MigrationService.reauthorize');
+        const capabilities = [...new Set(String(flags.capabilities || '').split(',').map(value => value.trim()).filter(Boolean))].sort();
+        if (!migrationId || capabilities.length === 0) throw new CliUsageError('migration reauthorize requires an id and --capabilities');
+        const context = await humanContext(runtime, { action: 'migration.reauthorize', migrationId, capabilities }, { io });
+        print(stdout, await runtime.migration.reauthorize({ migrationId, capabilities }, context));
         return 0;
       }
       const CONFIRMED_SUBS = new Set(['prepare', 'release', 'activate', 'abort', 'disable-target', 'rollback']);

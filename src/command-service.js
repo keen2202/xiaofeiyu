@@ -227,7 +227,7 @@ export class CommandService {
         this._authorize(request, principal, state, sourceKind);
         const targetTaskId = request.input.taskId || fresh.approvals[request.input.approvalId]?.taskId || null;
         const outcome = await this.store.commandContext.run(
-          { requestKey, taskId: targetTaskId, inboxKey, notificationTarget },
+          { requestKey, taskId: targetTaskId, inboxKey, notificationTarget, bindingId: principal.bindingId || null },
           () => this._dispatch(request, principal, { sourceKind, humanContext })
         );
         const taskId = outcome?.task?.id || outcome?.taskId || null;

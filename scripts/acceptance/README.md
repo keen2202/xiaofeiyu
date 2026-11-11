@@ -36,14 +36,29 @@ node scripts/acceptance/qq-setup.mjs `
 ## 2. 真实 B 站单条白名单 DM 验收
 
 前置：凭据文件已放到 `<dataDir>/credentials.json`（字段仅 `sessdata/bili_jct/buvid3/dedeuserid`），
-并已选定备份目的地与如实的故障域描述（本机若只有一块物理盘，必须写 "NOT independent"）。
+并由 owner 核验备份目的地属于独立物理故障域。同盘副本可以备份，但不能授予真实写入保护；不同盘符也不代表独立介质。
+准备 `verification.json`，如实填写下列字段，只有实际核验独立性后才可将 `independent` 改为 `true`：
+
+```json
+{
+  "independent": false,
+  "sourceRoot": "D:\\actual-data-dir",
+  "destinationRoot": "E:\\verified-external-backups",
+  "verifiedBy": "owner name",
+  "verifiedAt": "2026-11-11T00:00:00Z"
+}
+```
+
+源目录、目的地、核验人及实际核验时间必须匹配本次运行。此记录是 owner 的物理核验声明，软件不依据盘符或描述文字推断独立性。
 
 ```powershell
 node scripts/acceptance/real-dm.mjs `
   --to <白名单收件人mid> `
   --text "dsh-bili-unified acceptance ping" `
-  --dest D:\dsh-bili-backups `
-  --failure-domain "same-physical-disk:D (NVMe Disk0; NOT independent)" `
+  --dest E:\verified-external-backups `
+  --data-dir D:\actual-data-dir `
+  --failure-domain "owner 已核验的独立物理介质" `
+  --verification verification.json `
   --verified-by "<你的名字>" `
   --check        # 只校验参数并打印计划；去掉 --check 才真正执行
 ```

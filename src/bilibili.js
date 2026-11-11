@@ -111,6 +111,7 @@ export class BilibiliClient {
     onRisk = null,
     onAuthFailure = null,
     beforeRead = null,
+    sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
     operationContextVerifier = null,
     mutualVerifier = null,
     deviceId = null,
@@ -127,6 +128,7 @@ export class BilibiliClient {
     this.onRisk = onRisk;
     this.onAuthFailure = onAuthFailure;
     this.beforeRead = beforeRead;
+    this.sleep = sleep;
     this.operationContextVerifier = operationContextVerifier;
     this.mutualVerifier = mutualVerifier;
     this.deviceId = deviceId;
@@ -179,20 +181,28 @@ export class BilibiliClient {
 
   /**
    * Default wiring used when the runtime injects the SPEC §8.1 `store` and
-   * `rateLimiter` instead of callbacks. Retries reserve the quota again but do
-   * not wait for the read time slot they already consumed.
+   * `rateLimiter` instead of callbacks. Every attempt reserves quota and waits
+   * outside the store lock for its own read time slot.
    */
   async _defaultReserveRead(info = {}) {
     if (!this.store || !this.rateLimiter) return null;
-    const state = await this.store.getSnapshot();
-    const key = this._activeRateKey(state);
-    return this.store.transaction(async (draft) =>
-      this.rateLimiter.reserveRead(draft, {
-        key,
-        limits: this.config?.rateLimit || {},
-        enforceGap: info.retry !== true
-      })
-    );
+    let waitedMs = 0;
+    for (;;) {
+      try {
+        return await this.store.transaction(async (draft) => this.rateLimiter.reserveRead(draft, {
+          key: this._activeRateKey(draft), limits: this.config?.rateLimit || {}, enforceGap: true
+        }));
+      } catch (error) {
+        // Only a reserved time slot is a scheduling wait. Circuit/auth/quota
+        // errors fail immediately. Re-read all guards after every unlocked wait.
+        const nextAt = Date.parse(error.details?.nextAllowedAt);
+        if (error.code !== 'RATE_LIMITED' || !Number.isFinite(nextAt)) throw error;
+        const delay = Math.max(1, nextAt - this.now().getTime());
+        if (waitedMs + delay > this.timeoutMs) throw error;
+        waitedMs += delay;
+        await this.sleep(delay);
+      }
+    }
   }
 
   async _notifyRisk(code, retryAfterMs = 0) {
@@ -411,8 +421,7 @@ export class BilibiliClient {
     let lastError;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
-        // Every read attempt reserves quota again; retries do not wait for the
-        // read time slot they already consumed (SPEC §7.1).
+        // Every read attempt, including a retry, reserves quota and a time slot.
         if (options.read) await this._beforeRead({ attempt, retry: attempt > 0 });
         return await this._rawRequest(url, options);
       } catch (error) {
@@ -429,10 +438,8 @@ export class BilibiliClient {
   async _wbiKeys({ force = false } = {}) {
     const nowMs = this.now().getTime();
     if (!force && this.wbiCache && this.wbiCache.expiresAt > nowMs) return this.wbiCache;
-    // WBI keys are infrastructure metadata (cached for 10 minutes), not content
-    // reads: reserving a read slot here would consume the 1500ms read gap and
-    // make the caller's real read (e.g. videoDetails) fail with RATE_LIMITED.
-    const json = await this._request('https://api.bilibili.com/x/web-interface/nav', { read: false });
+    // Cached metadata is still a platform read and obeys quota, pause and circuit.
+    const json = await this._request('https://api.bilibili.com/x/web-interface/nav', { read: true });
     const images = json?.data?.wbi_img;
     if (!images?.img_url || !images?.sub_url) {
       throw new AppError('BILI_API_ERROR', 'WBI images are unavailable (empty keys are forbidden)');

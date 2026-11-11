@@ -13,6 +13,7 @@ import {
   scopeKeyFor
 } from './contracts.js';
 import { computeConfigHash } from './config.js';
+import { assertTaskAuthority } from './identity.js';
 import {
   deepClone,
   formatDateInZone,
@@ -315,6 +316,9 @@ export class EffectGateway {
   }
 
   _assertMigration(tx) {
+    if (tx.state.migration?.capabilityDecision?.state === 'prepared') {
+      throw new AppError('MIGRATION_BLOCKED', 'capability authorization is incomplete; explicit re-verification is required');
+    }
     if (tx.state.migration?.phase !== 'active') {
       throw new AppError('MIGRATION_BLOCKED', 'migration freeze blocks new dispatch', {
         details: { phase: tx.state.migration?.phase }
@@ -615,6 +619,7 @@ export class EffectGateway {
       this._assertMigration(tx);
       this._assertRecoveryPhase(tx);
       this._assertFence(tx);
+      for (const id of data.taskIds || (data.taskId ? [data.taskId] : [])) assertTaskAuthority(draft, draft.tasks[id]);
       const capability = data.capability || capabilityFor({
         namespace: data.namespace,
         action: data.action,
@@ -786,6 +791,7 @@ export class EffectGateway {
         accountRef: op.accountRef || null
       });
       this._assertCredentialRevisionUnchanged(tx, op);
+      for (const id of op.taskIds) assertTaskAuthority(draft, draft.tasks[id]);
       if (op.protected) await this._assertProtected(tx, op);
       else assertNoMatchingHold(tx.state, op.recoveryScope || { kind: 'workspace', workspaceId: tx.workspaceId });
       if (op.approvalId && this.approvalService) {
@@ -1510,6 +1516,7 @@ export class EffectGateway {
   }
 
   assertLocalDispatchInTransaction(tx, data = {}) {
+    if (data.taskId) assertTaskAuthority(tx.state, tx.state.tasks[data.taskId]);
     this._assertConfig(tx);
     this._assertMigration(tx);
     this._assertRecoveryPhase(tx);

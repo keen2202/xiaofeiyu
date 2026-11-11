@@ -1,4 +1,5 @@
 import { AppError } from './errors.js';
+import { assertTaskAuthority } from './identity.js';
 import { deepClone, jcsHash, nowIso, randomId, randomToken, sha256Hex } from './utils.js';
 
 /**
@@ -54,6 +55,13 @@ export class ApprovalService {
   }
 
   create(tx, { task, action, inputHash, principalId, ttlSec = this.defaultTtlSec, source = 'local' }) {
+    // Service-owned drafts stay service-owned; only the approval is addressed
+    // to an existing local human. Creating a draft never creates an owner.
+    if (tx.state.principals[principalId]?.sourceKind === 'scheduler') {
+      const owner = this.identity.findLocalOwner(tx.state);
+      if (!owner) throw new AppError('TRUST_UNAVAILABLE', 'scheduled draft requires an initialized human approver');
+      principalId = owner.id;
+    }
     if (!APPROVAL_ACTIONS.includes(action)) {
       throw new AppError('CAPABILITY_UNSUPPORTED', `approval action ${action} is not supported`);
     }
@@ -151,9 +159,10 @@ export class ApprovalService {
 
     return this.store.transaction(async (draft, tx) => {
       const principal = draft.principals[humanContext.principal.id];
-      if (!principal || principal.revokedAt) {
+      if (!principal || principal.revokedAt || principal.requiresReverification) {
         throw new AppError('FORBIDDEN', 'approving principal is no longer active');
       }
+      this._assertApproverBinding(draft, humanContext.principal.bindingId, principal.id);
       const current = draft.approvals[approvalId];
       if (!current) throw new AppError('APPROVAL_STALE', 'approval disappeared');
       if (current.decidedAt) {
@@ -174,6 +183,7 @@ export class ApprovalService {
       current.decision = decision;
       current.decidedAt = nowIso(this.now);
       current.decidedBy = humanContext.principal.id;
+      current.decidedBindingId = humanContext.principal.bindingId || null;
       current.nonceHash = null;
       if (decision === 'approve') {
         this.taskManager.transition(tx, task, 'running', {
@@ -231,6 +241,15 @@ export class ApprovalService {
   }
 
   /** Check an approved decision before an operation is dispatched. */
+  _assertApproverBinding(state, bindingId, principalId) {
+    if (!bindingId) return;
+    const binding = state.bindings?.[bindingId];
+    if (!binding || binding.revokedAt || binding.requiresReverification || binding.principalId !== principalId ||
+        !binding.scopes?.includes('approval.decide.own')) {
+      throw new AppError('FORBIDDEN', 'approval binding is no longer authorized');
+    }
+  }
+
   assertApproved(state, { taskId, action, inputHash, operationId = null }) {
     const candidates = Object.values(state.approvals).filter(
       (approval) =>
@@ -250,7 +269,14 @@ export class ApprovalService {
       }
       throw new AppError('APPROVAL_REQUIRED', 'no approved challenge for this action');
     }
+    assertTaskAuthority(state, state.tasks?.[taskId]);
     if (approval.inputHash !== inputHash) throw new AppError('APPROVAL_STALE', 'approval input no longer matches');
+    const approver = state.principals[approval.decidedBy || approval.principalId];
+    if (!approver || approver.revokedAt || approver.requiresReverification || approver.kind !== 'human' ||
+        !(approval.decidedBindingId || approver.scopes?.includes('*') || approver.scopes?.includes('approval.decide.own'))) {
+      throw new AppError('FORBIDDEN', 'approving principal is no longer authorized');
+    }
+    this._assertApproverBinding(state, approval.decidedBindingId, approver.id);
     if (Date.parse(approval.expiresAt) <= this.now().getTime()) {
       throw new AppError('APPROVAL_STALE', 'approval decision has expired');
     }

@@ -1077,6 +1077,88 @@ export class MigrationService {
     return { source: null, target: null };
   }
 
+  async reauthorize({ migrationId, capabilities }, humanContext) {
+    const allowed = ['platform:bilibili', 'production:local', 'publish:manual', 'publish:external', 'im'];
+    if (!Array.isArray(capabilities) || capabilities.length === 0 || capabilities.some(value => !allowed.includes(value))) {
+      throw new AppError('INPUT_REQUIRED', 'explicit supported capabilities are required');
+    }
+    capabilities = [...new Set(capabilities)].sort();
+    await this._requireHuman(humanContext, { action: 'migration.reauthorize', migrationId, capabilities });
+    const principal = humanContext.principal;
+    if (principal.kind !== 'human' || principal.role !== 'owner' || !principal.scopes?.includes('*')) {
+      throw new AppError('FORBIDDEN', 'local owner is required for capability reauthorization');
+    }
+    if (!this.activationChecks) throw new AppError('DEPENDENCY_UNAVAILABLE', 'capability verification is not wired');
+    const state = await this.store.getSnapshot();
+    const instance = await this.store.getInstance();
+    const assertTarget = (draft, local) => {
+      if (draft.migration.id !== migrationId || draft.migration.phase !== 'active' ||
+          local.status !== 'active' || local.migrationActivation?.migrationId !== migrationId) {
+        throw new AppError('MIGRATION_BLOCKED', 'reauthorization requires an activated imported target');
+      }
+      assertNoMatchingHold(draft, normalizeScope({ kind: 'workspace', workspaceId: draft.workspaceId }));
+      if (draft.recovery?.phase !== 'normal') throw new AppError('RECOVERY_GAP', 'use recovery authorization for disaster recovery');
+    };
+    assertTarget(state, instance);
+    const result = await this.activationChecks({ state, instance, dataDir: this.dataDir, requestedCapabilities: capabilities });
+    if (capabilities.some(capability => !result.capabilities.includes(capability))) {
+      throw new AppError('MIGRATION_BLOCKED', 'requested capabilities failed re-verification', { details: { blocked: result.blocked } });
+    }
+    // Bind the result to the same configuration, accounts and audience checked above.
+    const authorityHash = draft => jcsHash({ config: draft.configRevision, accounts: draft.accounts,
+      activeAccountRef: draft.activeAccountRef, bindings: draft.bindings, principals: draft.principals });
+    const checkedHash = authorityHash(state);
+    const decision = await this.store.transaction(async (draft, tx) => {
+      assertTarget(draft, tx.instance);
+      this.configService.assertCurrentState(draft);
+      if (authorityHash(draft) !== checkedHash) throw new AppError('APPROVAL_STALE', 'authority changed during capability verification');
+      const owner = draft.principals[principal.id];
+      if (!owner || owner.revokedAt || owner.kind !== 'human' || owner.role !== 'owner' || !owner.scopes?.includes('*')) {
+        throw new AppError('FORBIDDEN', 'owner is no longer active');
+      }
+      await this._targetProtection();
+      // A crashed, uncommitted grant is not part of the next request's baseline.
+      const pending = draft.migration.capabilityDecision;
+      const baseCapabilities = pending?.state === 'prepared' ? pending.baseCapabilities : tx.instance.allowedCapabilities;
+      const value = { state: 'prepared', id: randomId('capability'), migrationId, principalId: principal.id,
+        baseCapabilities, capabilities: [...new Set([...baseCapabilities, ...capabilities])].sort(),
+        activationRevision: tx.instance.activationRevision + 1, authorityHash: checkedHash, at: nowIso(this.now) };
+      draft.migration.capabilityDecision = value;
+      tx.appendEvent({ type: 'migration.capabilities.prepared', actor: principal.id, payload: value });
+      return deepClone(value);
+    });
+    await this.hooks.afterCapabilityPrepared?.({ decision });
+    await this.store.transaction(async (draft, tx) => {
+      assertTarget(draft, tx.instance);
+      this.configService.assertCurrentState(draft);
+      if (draft.migration.capabilityDecision?.id !== decision.id ||
+          authorityHash(draft) !== checkedHash) throw new AppError('APPROVAL_STALE', 'capability decision changed; explicit re-verification required');
+      await this._targetProtection();
+      // Hold the state lock through the instance write: competing preparations
+      // cannot replace the decision between this check and commit. A crash
+      // leaves the durable prepared gate closed until another explicit check.
+      await this.store.updateInstance(local => {
+        if (local.instanceId !== instance.instanceId || local.status !== 'active' ||
+            local.activationRevision !== decision.activationRevision - 1) throw new AppError('MIGRATION_BLOCKED', 'target changed');
+        local.allowedCapabilities = decision.capabilities;
+        local.activationRevision = decision.activationRevision;
+        local.capabilityDecisionId = decision.id;
+      });
+      await this.hooks.afterCapabilityInstance?.({ decision });
+      draft.migration.capabilityDecision.state = 'committed';
+      // The same local human just supplied fresh proof; old challenges stay invalid.
+      draft.principals[principal.id].requiresReverification = false;
+      // Only the workspace's restricted built-in scheduler is rebound here;
+      // imported IM bindings and other principals still need their own proof.
+      const scheduler = draft.principals[`service_scheduler_${draft.workspaceId}`];
+      if (scheduler?.kind === 'service' && scheduler.sourceKind === 'scheduler' && !scheduler.revokedAt) {
+        scheduler.requiresReverification = false;
+      }
+      tx.appendEvent({ type: 'migration.capabilities.authorized', actor: principal.id, payload: { capabilities, decisionId: decision.id } });
+    });
+    return { migrationId, capabilities: decision.capabilities, authorized: true, tasksResumed: false };
+  }
+
   async abort({ migrationId }, humanContext) {
     await this._requireHuman(humanContext, { action: 'migration.abort', migrationId });
     const state = await this.store.getSnapshot();

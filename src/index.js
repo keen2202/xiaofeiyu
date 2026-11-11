@@ -478,6 +478,7 @@ export async function createRuntime(options = {}) {
   let migration = null;
   try {
     const { MigrationService } = await import('./migration.js');
+    const { migrationCapabilityChecks } = await import('./migration-capabilities.js');
     migration = new MigrationService({
       store,
       configService,
@@ -485,6 +486,7 @@ export async function createRuntime(options = {}) {
       journal,
       humanProof,
       protection: backupService,
+      activationChecks: migrationCapabilityChecks({ configService, credentials, adapter: bilibiliAdapter, channel: imBridge?.channel }),
       taskManager,
       diary,
       executorStatus: async () => {

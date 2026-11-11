@@ -6,8 +6,9 @@
 //
 //   node scripts/acceptance/real-dm.mjs ^
 //     --to <peer-mid> --text "acceptance ping" ^
-//     --dest D:\dsh-bili-backups ^
-//     --failure-domain "same-physical-disk:D (NVMe Disk0; NOT independent)" ^
+//     --dest E:\verified-external-backups ^
+//     --failure-domain "owner-verified independent physical media" ^
+//     --verification <owner-reviewed-verification.json> ^
 //     --verified-by "<owner name>" [--data-dir <dir>] [--check]
 //
 // Order: credentials file -> account verify -> backup policy/point -> config ->
@@ -16,6 +17,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { readFailureDomainVerification } from './_failure-domain.mjs';
 import {
   WORK_DIR,
   ensureWorkDir,
@@ -32,7 +34,7 @@ import {
 
 const { flags } = parseArgs(process.argv.slice(2));
 if (flags.help) {
-  console.log('Usage: node scripts/acceptance/real-dm.mjs --to <mid> --text <text> --dest <abs path> --failure-domain <text> --verified-by <name> [--data-dir <dir>] [--check]');
+  console.log('Usage: node scripts/acceptance/real-dm.mjs --to <mid> --text <text> --dest <abs path> --failure-domain <text> --verified-by <name> --verification <json> [--data-dir <dir>] [--check]');
   process.exit(0);
 }
 
@@ -50,12 +52,18 @@ const dataDir = typeof flags['data-dir'] === 'string'
       ? path.join(process.env.DSH_HOME, 'dsh-bili-unified')
       : path.join(os.homedir(), '.dsh', 'dsh-bili-unified'));
 
+let failureDomainVerification;
+try {
+  failureDomainVerification = readFailureDomainVerification(flags.verification,
+    { dataDir, destinationRoot: dest, failureDomain, verifiedBy });
+} catch (error) { fail(error.message); }
 ensureWorkDir();
 const policyFile = writeJson(path.join(WORK_DIR, 'backup-policy.candidate.json'), {
   schemaVersion: 1,
   scheduleEnabled: false,
   destinationRoot: dest,
   failureDomain,
+  failureDomainVerification,
   verifiedBy,
   verifiedAt: null,
   intervalMinutes: 15,
