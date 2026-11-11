@@ -2,10 +2,10 @@
 
 - 版本：**0.2.1-draft**
 - 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
-- 日期：2026-11-07
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
+- 日期：2026-11-07（最近修订：2026-11-11）
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）。均不改变 GATE-0/GATE-MEM，不代表代码实施或真实环境验证。
 - 项目根目录：`D:/Workespace/xiaofeiyu`
-- 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`。
+- 版本控制：git 仓库（默认分支 `main`），远程 `origin` 为 `git@github.com:keen2202/xiaofeiyu.git`；基线提交 `ce38d5a`；2026-11-11 整改提交 `d1a6e1c`、`6ae973a`。
 - 基线：`DESIGN.md`、`SPEC.md` 的 0.2.1-draft；普通业务配置参考既有 `config.example.json`，规范验收统一对照 SPEC §19。
 - 历史轮次：此前已将账本 v3、可信备份及灾备建议拆为任务与验收；2026-11-05 本轮依据复核报告同步修订 DESIGN/SPEC/TASKS 和两份历史摘要，不修改 config、package、代码或权限，当时尚未建立 git 仓库、未做提交（2026-11-07 已建立仓库并提交基线）。下文任务描述保留计划与验收要求；当前实现见 §0。BackupPolicy 已作为独立本地策略接线，不属于普通 config.example.json。
 - 当前规范范围：一个轻核心＋可选平台/IM/执行适配器＋ArtifactStore；独立真实视频生产；同插件兼容 schema 停机迁移；分层可信备份、只读灾备及证据驱动的分 scope 解冻。保留上一版42条新增需求，本次加10条，共52条逐项映射；不是微服务、旧插件导入、远程 worker 或自动接管。
@@ -13,7 +13,7 @@
 
 ## 0. 唯一现行实施与验收状态（2026-11-11）
 
-本节取代下文计划标签和 §10 历史实施状态。修复基线为 0cfb4ae + 本轮工作区改动；完整变更和复核证据见 [本轮整改报告](report/PRIORITY_FIXES_2026-11-11.md)。历史审计保留作为修复前证据，不重写探针结果。离线通过与真实验收分开计算，不宣称全部交付。
+本节取代下文计划标签和 §10 历史实施状态。修复基线为 `0cfb4ae` + 本轮工作区改动，工作区已于 2026-11-11 提交为 `d1a6e1c`（审计/验收证据）与 `6ae973a`（F01–F10 修复及契约/文档同步）；完整变更和复核证据见 [本轮整改报告](report/PRIORITY_FIXES_2026-11-11.md)。历史审计保留作为修复前证据，不重写探针结果。离线通过与真实验收分开计算，不宣称全部交付。
 
 | 任务 | 当前实现 | 当前验收与剩余条件 |
 |---|---|---|
@@ -25,7 +25,7 @@
 | T09 | Manual/External 已实现 | 离线回归；真实投稿未验收 |
 | T10 | CLI/HTTP/宿主及调度已接线 | 本轮补能力重验 CLI；真实 DSH 挂载有历史证据，长期组合待验收 |
 | T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
-| T12.1/T16 | IM 契约与桥接已实现 | 11-10 真实入站→本地人类拒绝→回信已有证据；稳定组合、独立故障域保护仍待验收 |
+| T12.1/T16 | IM 契约与桥接已实现 | 11-10 真实入站→本地人类拒绝→回信已有证据；approve 路径、DSH 内组合、独立故障域保护仍待验收；机器人 QQ 自 2026-11-10 起受腾讯风控下线（外部） |
 | T12.2 | DM 历史单动作业务成功 | 评论/Manual/External 未实测；同盘旧 DM 记录不算满足完整灾备前置 |
 | T12.3 | 跨系统迁移实现已有 | Windows→Linux→Windows 合成数据交接/重启通过；测试人类证明与保护夹具，生产授权前置仍另验 |
 | T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
@@ -37,6 +37,8 @@
 | T22 | 隔离灾备组合测试已有 | 跨机 full 只读恢复通过（38ms/小样本，cut 到故障 17分24.370秒）；物理独立性及持续 RPO/RTO 待验 |
 
 优先级 1–4：代码修复及规范同步。优先级 5：Linux Node 24/22 全量各 406 项通过，真实媒体、双向迁移和一次跨机 full 只读恢复通过；物理故障域、长期 RPO/RTO 与真实外发范围仍另验。优先级 6：按审计建议后置记忆能力，§9 仍为待审核规划，不升级 schema、不保存新增对话记忆。
+
+本轮最终树复测（2026-11-11，Windows Node v24.18.0，提交 `6ae973a` 后工作树）：`node scripts/check.mjs` 111 文件通过；`npm test` 406 项 / 404 通过 / 2 skip（Windows 符号链接权限限制）/ 0 失败；`npm run test:coverage` 行 84.01% / 分支 67.78% / 函数 77.04%。Linux 侧证据为 Node v24.14.0 与 v22.23.4 各 406 项零 skip、真实 ffmpeg/ffprobe 媒体、Windows→Linux→Windows 合成数据交接和一次跨机 full 只读恢复（见 [结构化证据](report/priority-linux-acceptance-2026-11-11.json)）；Linux 全量日志早于最后 5 行 `identity.js` 加固，该改动由当前树 Windows 全量/定向回归覆盖。
 
 ## 1. 审核门与完成口径
 
@@ -391,7 +393,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 ### T20：可信恢复点、分层备份与保护健康【验收要求；现状见 §0】
 
-**实现状态（2026-11-10，保持 PENDING）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。真实数据目录 `C:\Users\22338\.dsh\dsh-bili-unified` 已初始化，但 `backup.status=unprotected/policy_not_configured`；本机仅一块物理 NVMe 盘（C:/D: 同盘），无法提供独立故障域，真实策略/恢复点与 owner 确认仍需在 TTY 中完成，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。
+**实现状态（2026-11-11，机制已实现；真实保护受限）**：备份/恢复机制已实现并有离线测试；真实环境命令 smoke（临时目录 + 测试用 TTY verifier）通过 `backup policy → create(ledger) → verify → status=protected` 与 `config update`。真实数据目录 `C:\Users\22338\.dsh\dsh-bili-unified` 已初始化并有 12 个历史恢复点（最近账本点 `backup_3ba1dea24c7345fe88e58fc3fd606faa`，2026-11-10T15:05:54Z），但当前 `backup.status=unprotected/independent_failure_domain_not_verified`；本机仅一块物理 NVMe 盘（C:/D: 同盘，Get-PhysicalDisk 仅 Disk0），无法提供独立故障域。owner 须在 TTY 中写入含 sourceRoot/destinationRoot/verifiedBy/verifiedAt/independent 的策略并建立新点，才能恢复受保护派发；同盘多份不算独立，见 `report/REAL_ACCEPTANCE_RUNBOOK_2026-11-10.md`。
 
 **依赖**：T02、T14、T15。
 
@@ -473,7 +475,7 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 **目标文件**：`src/adapters/registry.js`、`src/config.js`、`package.json`（获批后同步检查脚本，不在本轮改动）；`test/lite-loading.test.js`、`test/dependency-preflight.test.js`、`test/integration.test.js`、`test/safety-matrix.test.js`。
 
-**工作**：为完整链路建立副作用矩阵与离线回归；隔离无媒体工具/IM SDK/B 站 Cookie/Agent Key 的启动环境，跟踪模块加载、fetch/http、spawn/execFile、timer/poll。显式 profile 预检只检查配置程序/版本/权限，禁用路径零探测；可选组件失败仅影响自身。记录长期归档/永久索引/素材容量及积压，验证80MiB预警、100MiB停新和永久引用保留，不能用“轻量”掩盖磁盘增长；获批后同步 package.json 的版本与全源码语法/自动测试/覆盖率脚本（当前version=0.1.0及旧检查脚本是已知草案待办），不引入服务编排。
+**工作**：为完整链路建立副作用矩阵与离线回归；隔离无媒体工具/IM SDK/B 站 Cookie/Agent Key 的启动环境，跟踪模块加载、fetch/http、spawn/execFile、timer/poll。显式 profile 预检只检查配置程序/版本/权限，禁用路径零探测；可选组件失败仅影响自身。记录长期归档/永久索引/素材容量及积压，验证80MiB预警、100MiB停新和永久引用保留，不能用“轻量”掩盖磁盘增长；获批后同步 package.json 的版本与全源码语法/自动测试/覆盖率脚本（2026-11-09 已升至 0.2.1 并接入 check/test/test:coverage），不引入服务编排。
 
 **先写失败测试与验收**：FR-LITE-001～004、SPEC §19.2全部19条集成场景，以及T22覆盖的§19.5灾备矩阵。额外断言未配置备份策略时零备份调度/目的地扫描，受保护派发明确拒绝但诊断与无关免费本地工作不被误称平台不可用；独立BackupPolicy不混入普通业务配置。
 
@@ -550,23 +552,25 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 ### 4.1 能力分项
 
+下表“真实证据与当前口径”列已按 2026-11-11 §0 更新；2026-11-07/09 历史轮次记录见 §10。
+
 | 能力 | 工作项 | 必需代码/安全验收 | 真实证据与当前口径 | 默认状态 |
 |---|---|---|---|---|
-| 稳定身份/账本/Task | T02、T14 | 同 MID 轮换、workspace、永久键、partial 未结算、归档恢复 | 未实施 | 仅轻核心查询，不探测登录 |
-| 自主浏览 | T03、T05、T10 | 账号/内容去重、失败隔离、只读限流 | T12.2 可选；未实测 | 关闭 |
-| 评论/白名单 DM | T06、T07 | 统一审批/策略、额度、目标/正文键、unknown | T12.2 单独授权；未实测 | 关闭，评论审批、空白名单 |
-| scope 日记 | T08 | >2000 事实、版本/双阶段恢复、隐私 | 本地临时目录必测；未实施 | 关闭 |
-| Artifact | T15 | 不可变 hash/ACL、链接越界/恢复、实际字节 | 本地导入必测；未实施 | 外部导入白名单为空 |
-| 本地执行/独立生产 | T17.1～T17.3 | 固定阶段、dry、审批、预算、取消/序号/验证 | 真实 MP4＋封面必需，当前 BLOCKED | production/allowLocalProducer 关闭、dry、付费上限 0 |
-| 独立投稿 | T09 | Artifact/原 Task 审批、Manual 断言、External 原 Operation resolve | External T12.2 单独验证；未实测 | 关闭、Manual、dry、禁止 auto |
-| IM 契约/outbox | T14、T16.1 | 主体会话 ACL、防重/冲突、挑战、可靠通知 | Mock 仅契约；未实施 | 关闭、空授权、通知关闭 |
-| 真实 dsh-im | T16.2、T12.1 | 只读能力/身份核验后薄绑定 | 真实消息/批准或拒绝/回信；BLOCKED | unavailable，不能 Mock 冒充 |
-| 停机迁移 | T18 | v3与epoch、完整账本、恢复hold保留、幂等激活和最新账本回滚 | 双根实例必测；跨OS T12.3未实测 | offline，不自动派发旧记录 |
-| 可信分层备份 | T20、T22 | 一致cut、ledger/full、故障域与超龄保护、保留/清理引用闭合 | 隔离verify/恢复演练必需；物理介质未测单列 | 调度关闭、目的地无默认值，未保护禁受保护派发 |
-| 灾备与证据解冻 | T21、T22 | 新epoch/只读、未知区间、旧写者隔离、分scope授权、断电幂等 | 临时目录故障注入必需，RPO/RTO为待测目标 | 旧任务/权限/通知hold，不自动恢复外发 |
+| 稳定身份/账本/Task | T02、T14 | 同 MID 轮换、workspace、永久键、partial 未结算、归档恢复 | 已实现并通过离线测试（§0） | 仅轻核心查询，不探测登录 |
+| 自主浏览 | T03、T05、T10 | 账号/内容去重、失败隔离、只读限流 | 离线通过；真实在线浏览未实测 | 关闭 |
+| 评论/白名单 DM | T06、T07 | 统一审批/策略、额度、目标/正文键、unknown | DM 单条真实成功；评论真实写未实测 | 关闭，评论审批、空白名单 |
+| scope 日记 | T08 | >2000 事实、版本/双阶段恢复、隐私 | 已实现；本地临时目录测试通过 | 关闭 |
+| Artifact | T15 | 不可变 hash/ACL、链接越界/恢复、实际字节 | 已实现；本地导入与链接防护测试通过 | 外部导入白名单为空 |
+| 本地执行/独立生产 | T17.1～T17.3 | 固定阶段、dry、审批、预算、取消/序号/验证 | Linux 真实 MP4＋封面通过（测试 human verifier）；Windows 工具与生产 TTY 人类证明未验 | production/allowLocalProducer 关闭、dry、付费上限 0 |
+| 独立投稿 | T09 | Artifact/原 Task 审批、Manual 断言、External 原 Operation resolve | 离线通过；真实投稿未实测 | 关闭、Manual、dry、禁止 auto |
+| IM 契约/outbox | T14、T16.1 | 主体会话 ACL、防重/冲突、挑战、可靠通知 | 契约/outbox 已实现并离线通过；真实宿主见 T16.2 | 关闭、空授权、通知关闭 |
+| 真实 dsh-im | T16.2、T12.1 | 只读能力/身份核验后薄绑定 | 真实收发/拒绝回信已验证；approve 与 DSH 内组合待验；QQ 当前风控离线 | unavailable，不能 Mock 冒充 |
+| 停机迁移 | T18 | v3与epoch、完整账本、恢复hold保留、幂等激活和最新账本回滚 | 双根/双向合成跨 OS 通过；真实双系统未验 | offline，不自动派发旧记录 |
+| 可信分层备份 | T20、T22 | 一致cut、ledger/full、故障域与超龄保护、保留/清理引用闭合 | 离线演练通过；真实目的地未核验独立故障域（单盘） | 调度关闭、目的地无默认值，未保护禁受保护派发 |
+| 灾备与证据解冻 | T21、T22 | 新epoch/只读、未知区间、旧写者隔离、分scope授权、断电幂等 | 离线故障注入通过；跨机 full 只读恢复 38ms（小样本）；持续 RPO/RTO 未测 | 旧任务/权限/通知hold，不自动恢复外发 |
 | 记忆连续性规划 | §9、GATE-MEM | 事实来源、偏好确认、经验适用性、版本/纠错、遗忘和灾备过滤 | 仅待审核建议，未写入主规范/未实施 | 不启用自动学习，不长期保存完整对话 |
 | 平台/remote 预留 | T14、T17.1、T19 | 无 BV 强依赖、服务隔离、不支持明确拒绝 | 只契约 Mock，非正式能力 | 不可启用，无 SDK/网络 worker |
-| 轻量/入口 | T10、T19、T11 | 零重依赖/进程/轮询/探测、按主体查询与取消 | 离线仪表测试必测；未实施 | 仅本插件状态 |
+| 轻量/入口 | T10、T19、T11 | 零重依赖/进程/轮询/探测、按主体查询与取消 | 已实现；离线仪表测试通过 | 仅本插件状态 |
 
 ### 4.2 原规范与新增 FR 的逐条映射
 
@@ -693,9 +697,9 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 | T22-13 分scope解冻 | FR-DR-008/009 | 仅授权scope放行，其余hold及旧任务继续冻结 |
 | T22-14 零重放 | FR-DR-002/010 / §27.8 | 新request/Cookie/epoch及所有入口均不能重复外发 |
 
-## 5. 测试命令与证据（获批实施后使用，当前未执行）
+## 5. 测试命令与证据（已实现并执行；结果见 §0 与报告）
 
-以下为 Git Bash/Node 22 命令设计。T19 须实现对应包脚本后才能称可用。所有自动测试默认拒绝真实网络/付费服务和真实用户目录写入；人工程序使用 `.acceptance.mjs`，不混入 `.test.js/.test.mjs` 自动发现，也不能以 skip 充当验收通过。
+以下命令面向 Git Bash/Node 22+。T19 已实现对应包脚本（`package.json` 的 check/test/test:coverage），2026-11-09/11 已实际执行，当前结果见 §0。所有自动测试默认拒绝真实网络/付费服务和真实用户目录写入；人工程序使用 `.acceptance.mjs`，不混入 `.test.js/.test.mjs` 自动发现，也不能以 skip 充当验收通过。
 
 ### 5.1 全源码语法检查与离线自动测试
 
@@ -766,7 +770,7 @@ T12 的三个分项不纳入自动命令；只读宿主探测不发送试探消�
 - 可信分层备份（一致恢复点、ledger/full、manifest 校验、按 tier 保留底线）、只读灾备恢复与证据分 scope 解冻，以及平台写/付费/生产/通知/迁移各入口共用同一恢复门禁。
 - 所有新增 FR 的安全/轻量/跨模块测试、全源码语法检查和分项交付说明。
 
-`BackupPolicy` 由 owner 管理并落在 `<dataDir>/backup-policy.json`，`config.example.json` 本轮未改、不含备份策略示例；策略文件与实际调度实现均属未来接线，本文档不声称其已存在。
+`BackupPolicy` 由 owner 管理并落在 `<dataDir>/backup-policy.json`，`config.example.json` 不含备份策略示例（策略独立于普通配置）。策略文件与调度已接线并有离线测试；2026-11-11 修复 F01/F06 后，策略需含 owner 核验的结构化故障域字段（sourceRoot/destinationRoot/verifiedBy/verifiedAt/independent），缺少、同域或策略变更后无新点时真实平台写/付费/IM 保持 fail-closed。真实数据目录当前仍为 `unprotected`（同盘、未核验独立介质），见 §0/T20。
 
 ### 仅契约/Mock 预留，不计真实能力
 
@@ -837,7 +841,7 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 ## 8. 本轮一致性复核与已统一口径
 
-第 1～6 条为首轮交叉审查后已同步到 DESIGN/SPEC/TASKS 的确定基线，第 7～11 条为灾备与记忆增补口径；以下均是实施和测试应遵守的确定基线，不是待实施者自行选择的分支，用户对修订稿的审核仍未完成。DESIGN 的状态行、引言与 §13/§14 尾注，以及 SPEC 的状态行、引言、§19 验收、§20 审核门尾注与 §27.8 已同步更正：TASKS 现为 0.2.1-draft，已映射账本 v3、FR-DR-001～010 与 T20～T22；示例配置及旧审查摘要未因此修改，代码仍未实施。本次仅消除文档状态与局部术语不一致，不解除 GATE-0 或 GATE-MEM。
+第 1～6 条为首轮交叉审查后已同步到 DESIGN/SPEC/TASKS 的确定基线，第 7～11 条为灾备与记忆增补口径；以下均是实施和测试应遵守的确定基线，不是待实施者自行选择的分支，用户对修订稿的审核仍未完成。DESIGN 的状态行、引言与 §13/§14 尾注，以及 SPEC 的状态行、引言、§19 验收、§20 审核门尾注与 §27.8 已同步更正：TASKS 现为 0.2.1-draft，已映射账本 v3、FR-DR-001～010 与 T20～T22；示例配置及旧审查摘要未因此修改。本节保留 2026-11-07 文档同步快照；代码已于 2026-11-09/11 实施并通过离线测试，2026-11-11 当前状态见 §0。本次仅消除文档状态与局部术语不一致，不解除 GATE-0 或 GATE-MEM。
 
 1. **Manual账本时点**：待审批/待人工期间保留Publish/Task及pending业务索引，不伪造已派发Operation。仅不存在已派发/unknown操作的Manual任务，在本地人类complete时创建唯一manual_confirmation confirmed Operation；External核查只能更新原Operation。
 2. **公共字段与身份**：AccountRef/ContentRef平台无关，aid/cid/tid使用platformData，WBI留在协议层；IM键包含adapterId/botAccountId/conversationId/eventId；scope日记采用SPEC §14的scopeKey路径。
@@ -984,10 +988,10 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 - **T02～T10、T14～T18、T20～T22 的离线代码项**：均已有实现与测试证据（见 10.1）；A 组增补了备份调度、反向回滚、恢复证据修复/断点续办、评论与 DM resume、恢复清理与父链日记。T18/T20/T21/T22 的完整验收仍受 10.3 的外部/故障域限制。
 - **T06/T07/T10 的 resume**：评论 resume 重签审批并由 CLI 在批准后发送；DM resume 复用原 Task；`task.resume` 在 CommandService/CLI 按 kind 分派，生产 Task 路径不变。
 - **T11**：`npm run check`、`npm test`、`npm run test:coverage` 已全量通过；A 组范围已执行独立只读审查并修复审查发现（见 §10.5）。全量 T11 的正式人工审查/签署仍未完成，因此不标记为完整 DONE。
-- **T12.1/T12.2/T12.3**：真实 IM、真实 B 站/External、真实跨 OS 均无授权或环境，保持 **BLOCKED/未实测**；离线 Mock 不替代。
+- **T12.1/T12.2/T12.3**：真实 IM、真实 B 站/External、真实跨 OS 均无授权或环境，保持 **BLOCKED/未实测**；离线 Mock 不替代。（2026-11-10 后续：T12.1 入站→人工拒绝→回信已有真实证据；approve 路径仍未验。当前见 §0。）
 - **T13**：本节即本轮分项交付记录；外部项按 10.3 单列，不宣称全功能交付。
-- **T16.2**：真实 dsh-im 宿主能力探测未获得可核验宿主证据，保持 **BLOCKED**；T16.1 契约完成不等于真实 IM 完成。
-- **T17.3**：本机真实 ffmpeg/ffprobe 离线验收通过，但测试使用注入的测试 human verifier；生产人类证明机制仍需环境验证。
+- **T16.2**：真实 dsh-im 宿主能力探测未获得可核验宿主证据，保持 **BLOCKED**；T16.1 契约完成不等于真实 IM 完成。（2026-11-10 后续：NapCat/OneBot 真实只读探测与真实收发/回信已验证，DSH 内组合受 QQ 风控阻塞；当前见 §0 与 T16.2。）
+- **T17.3**：Linux 真实 ffmpeg/ffprobe 离线验收通过（Windows 本机未安装媒体工具），测试使用注入的测试 human verifier；生产人类证明机制仍需环境验证。
 - **T19/T22**：轻量、依赖预检、临时目录故障注入与双目录迁移已覆盖；物理介质/独立故障域/跨 OS 与真实宿主组合仍未实测。
 - **GATE-MEM / TASKS §9 记忆规划**：未审核、未实现、未占用 FR/D/R 编号；不把任何记忆能力计入本次交付。
 
@@ -1028,4 +1032,4 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 **验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
 
-**仍未完成/未实测**：T16.2 真实 DSH/IM 只读探测、T12.1 真实 IM 闭环、T12.2 真实 B 站写/External、T12.3 真实跨 OS 迁移、T17.3 真实媒体（本机无 ffmpeg/ffprobe）、T22 真实故障域/介质/RPO-RTO；`§9` 记忆规划待 GATE-MEM。上述均为真实环境/授权门槛，离线测试通过不替代。
+**仍未完成/未实测（2026-11-11 更新）**：T12.1 approve 路径与 DSH 内 IM 持续组合（机器人 QQ 受腾讯风控离线）、T12.2 评论/Manual/External 真实写、T12.3 真实双系统迁移、T20/T22 独立故障域与持续 RPO/RTO、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。Linux 真实媒体、双向跨 OS 合成数据与跨机 full 只读恢复已于 2026-11-11 通过；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
