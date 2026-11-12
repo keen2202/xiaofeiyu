@@ -107,6 +107,21 @@ export function validateBackupPolicy(policy, { dataDir = null, requireDestinatio
   return merged;
 }
 
+// A freshly imported target must be able to capture its first recovery point
+// before activation; otherwise a real cross-host cutover can never satisfy the
+// activation recovery-point gate. Only an imported/validated target instance
+// is allowed. Source-side migration phases (quiescing/sealed/released) stay
+// blocked so a retired source cannot keep minting recovery points.
+const TARGET_BOOTSTRAP_MIGRATION_PHASES = new Set(['imported', 'validated']);
+
+export function isTargetBootstrapCapture(state, instance) {
+  if (!TARGET_BOOTSTRAP_MIGRATION_PHASES.has(state?.migration?.phase)) return false;
+  if (!instance || !['paused', 'validated'].includes(instance.status)) return false;
+  return Boolean(instance.migrationId) &&
+    instance.migrationId === state.migration.id &&
+    instance.previousInstanceId === state.migration.sourceInstanceId;
+}
+
 export class BackupPolicyService {
   constructor({ file, dataDir, now = () => new Date() } = {}) {
     this.file = file;
@@ -540,10 +555,13 @@ export class BackupService {
     return this.humanProof.assert(humanContext, binding);
   }
 
-  async _assertGateForBackup() {
+  async _assertGateForBackup({ allowTargetBootstrap = false } = {}) {
     const state = await this.store.getSnapshot();
     if (state.migration?.phase !== 'active') {
-      throw new AppError('MIGRATION_BLOCKED', 'backup cannot create a point during migration');
+      const instance = allowTargetBootstrap ? await this.store.getInstance() : null;
+      if (!allowTargetBootstrap || !isTargetBootstrapCapture(state, instance)) {
+        throw new AppError('MIGRATION_BLOCKED', 'backup cannot create a point during migration');
+      }
     }
     if (['blocked'].includes(state.recovery?.phase)) {
       throw new AppError('RECOVERY_GAP', 'backup is blocked while recovery is blocked');
@@ -626,12 +644,15 @@ export class BackupService {
       throw new AppError('BACKUP_UNPROTECTED', 'scheduled backup requires an explicitly enabled policy');
     }
     const actor = scheduled ? 'system:backup-scheduler' : humanContext.principal.id;
+    // Only an explicit local-owner capture on a just-imported target may seed
+    // the target's first recovery point; the scheduler keeps the active-only rule.
+    const allowTargetBootstrap = scheduled !== true;
     if (typeof this.prepareCapture === 'function') {
       // Complete provable multi-file commits before the capture boundary; the
       // hook is injected by the runtime and must be read-only outside recovery.
       await this.prepareCapture({ kind, requestId, scheduled });
     }
-    await this._assertGateForBackup();
+    await this._assertGateForBackup({ allowTargetBootstrap });
     const preCaptureState = await this.store.getSnapshot();
     await this._assertDestinationCapacity(policy, kind, preCaptureState);
     const index = await this._readIndex(policy);
@@ -651,7 +672,7 @@ export class BackupService {
     const startedAt = nowIso(this.now);
     const checkpointTimeoutMs = policy.checkpointTimeoutMs;
     const capture = await this.store.transaction(async (draft, tx) => {
-      await this._assertGateForBackupInTransaction(draft);
+      await this._assertGateForBackupInTransaction(draft, tx, { allowTargetBootstrap });
       const cutAt = nowIso(this.now);
       const sanitized = sanitizeStateForBackup(draft);
       const pendingExcluded = [
@@ -931,9 +952,12 @@ export class BackupService {
     }
   }
 
-  async _assertGateForBackupInTransaction(draft) {
+  async _assertGateForBackupInTransaction(draft, tx = null, { allowTargetBootstrap = false } = {}) {
     if (draft.migration?.phase !== 'active') {
-      throw new AppError('MIGRATION_BLOCKED', 'backup cannot create a point during migration');
+      const instance = allowTargetBootstrap ? tx?.instance || null : null;
+      if (!allowTargetBootstrap || !isTargetBootstrapCapture(draft, instance)) {
+        throw new AppError('MIGRATION_BLOCKED', 'backup cannot create a point during migration');
+      }
     }
     if (draft.checkpointFence) {
       const fence = draft.checkpointFence;

@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHarness, bindMockAccount, makeMockAdapter, mockCandidate } from './helpers/harness.js';
+import { createHarness, bindMockAccount, makeMockAdapter, mockCandidate, AlwaysHumanVerifier } from './helpers/harness.js';
 import { createRuntime } from '../src/index.js';
 import { main as cliMain } from '../cli.mjs';
 import { CommentsModule } from '../src/modules/comments.js';
 import { jcsHash } from '../src/utils.js';
 import { NAV_WBI, responseJson } from './helpers/mock-fetch.js';
 import { MigrationService, verifyMigrationPackage } from '../src/migration.js';
+import { isTargetBootstrapCapture } from '../src/backup-recovery.js';
 import { migrationCapabilityChecks } from '../src/migration-capabilities.js';
 import { DiaryModule } from '../src/modules/diary.js';
 import { nowIso } from '../src/utils.js';
@@ -182,6 +183,127 @@ test('prepare/export/release/import/validate/activate preserves ledger, artifact
     await flow.source.harness.cleanup();
     await fs.rm(flow.targetDir, { recursive: true, force: true });
   }
+});
+
+test('audit: an imported target can seed its first recovery point before activation', async () => {
+  // Real-host cutover: a brand-new target has no backup policy or point yet, and
+  // activation requires a healthy target recovery point. Capture the first point
+  // of the imported ledger while the target is still paused/validated, then
+  // activate with real protection (no injected fixture).
+  const flow = await fullFlow({ activate: false });
+  let runtime = null;
+  let destinationDir = null;
+  try {
+    const targetConfig = JSON.parse(JSON.stringify(flow.source.harness.config));
+    targetConfig.dataDir = flow.targetDir;
+    await fs.writeFile(path.join(flow.targetDir, 'config.json'), JSON.stringify(targetConfig));
+    destinationDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-target-recovery-'));
+    runtime = await createRuntime({
+      dataDir: flow.targetDir,
+      now: flow.source.harness.now,
+      env: {},
+      humanVerifier: new AlwaysHumanVerifier(),
+      logger: { warn() {}, info() {} }
+    });
+    const verifiedAt = nowIso(flow.source.harness.now);
+    await runtime.policyService.save({
+      schemaVersion: 1,
+      scheduleEnabled: false,
+      destinationRoot: destinationDir,
+      failureDomain: 'test:independent second root',
+      failureDomainVerification: {
+        independent: true,
+        sourceRoot: flow.targetDir,
+        destinationRoot: destinationDir,
+        verifiedBy: 'test-owner',
+        verifiedAt
+      },
+      verifiedBy: 'test-owner',
+      verifiedAt,
+      intervalMinutes: 15,
+      maxPointAgeMinutes: 60
+    });
+    const humanContext = {
+      principal: { id: 'principal_test_owner', kind: 'human', role: 'owner', scopes: ['*'] },
+      proof: { kind: 'test', ok: true }
+    };
+    const point = await runtime.backupService.create(
+      { kind: 'ledger', requestId: 'target-bootstrap-1' },
+      humanContext
+    );
+    assert.equal(point.status, 'verified');
+    const protection = await runtime.backupService.getProtection({ kind: 'workspace', workspaceId: null });
+    assert.equal(protection.status, 'protected');
+    const activated = await runtime.migration.activate(
+      {
+        migrationId: flow.imported.migrationId,
+        receipt: flow.released.receipt,
+        dataDir: flow.targetDir,
+        sourceStopped: true
+      },
+      humanContext
+    );
+    assert.equal(activated.phase, 'active');
+    const instance = JSON.parse(await fs.readFile(path.join(flow.targetDir, 'instance.json'), 'utf8'));
+    assert.equal(instance.status, 'active');
+  } finally {
+    if (runtime) await runtime.close().catch(() => {});
+    if (destinationDir) await fs.rm(destinationDir, { recursive: true, force: true });
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+  }
+});
+
+test('CLI migration import validates a sealed package without a running runtime', async () => {
+  const flow = await fullFlow({ activate: false });
+  const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-migrate-cli-import-'));
+  await fs.rm(targetDir, { recursive: true, force: true });
+  let stdout = '';
+  try {
+    const verifier = { issue: () => ({ challengeId: 'test-challenge' }), verify: async () => true };
+    const exitCode = await cliMain(
+      ['migration', 'import', '--from', flow.exported.packageDir, '--data-dir', targetDir, '--confirm'],
+      {
+        stdout: { write: (chunk) => { stdout += chunk; } },
+        stderr: { write: () => {} },
+        humanVerifier: verifier,
+        prompt: async () => 'test-response'
+      }
+    );
+    assert.equal(exitCode, 0);
+    const result = JSON.parse(stdout.slice(stdout.indexOf('{')));
+    assert.equal(result.phase, 'imported');
+    assert.equal(result.migrationId, flow.imported.migrationId);
+    const state = JSON.parse(await fs.readFile(path.join(targetDir, 'state.json'), 'utf8'));
+    assert.equal(state.migration.phase, 'imported');
+    assert.deepEqual(state.backups, {});
+  } finally {
+    await flow.source.harness.cleanup();
+    await fs.rm(flow.targetDir, { recursive: true, force: true });
+    await fs.rm(targetDir, { recursive: true, force: true });
+  }
+});
+
+test('audit: target bootstrap capture stays limited to imported or validated targets', () => {
+  const targetInstance = { status: 'validated', migrationId: 'm1', previousInstanceId: 'src1' };
+  const targetState = { migration: { phase: 'validated', id: 'm1', sourceInstanceId: 'src1' } };
+  assert.equal(isTargetBootstrapCapture(targetState, targetInstance), true);
+  assert.equal(
+    isTargetBootstrapCapture(
+      { migration: { ...targetState.migration, phase: 'imported' } },
+      { ...targetInstance, status: 'paused' }
+    ),
+    true
+  );
+  // Source-side phases never qualify, even when the ids happen to match.
+  for (const phase of ['active', 'quiescing', 'sealed', 'released']) {
+    assert.equal(isTargetBootstrapCapture({ migration: { ...targetState.migration, phase } }, targetInstance), false);
+  }
+  // Only the imported target instance itself may seed; not an active or foreign one.
+  assert.equal(isTargetBootstrapCapture(targetState, { ...targetInstance, status: 'active' }), false);
+  assert.equal(isTargetBootstrapCapture(targetState, { ...targetInstance, migrationId: 'other' }), false);
+  assert.equal(isTargetBootstrapCapture(targetState, { ...targetInstance, previousInstanceId: 'other' }), false);
+  assert.equal(isTargetBootstrapCapture(targetState, null), false);
 });
 
 test('audit: target runtime and CLI reauthorize verified capabilities, retain holds and require fresh approval on resume', async () => {

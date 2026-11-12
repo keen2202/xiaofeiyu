@@ -1261,7 +1261,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - 包内保留永久键、requests、额度及unknown占用、Task/Execution/审批审计、IM inboxKeys/outbox、事件与产物；不带Cookie/API Key/机器人密钥/批准nonce明文/旧机器执行权限。旧人类挑战全部失效，历史决定仅作审计。
 - `FR-MIG-006`：本机命令路径、目录授权、Profile工具绑定、模型/IM端点及环境秘密引用只能作为待确认提示，不自动启用。目标从安全默认配置开始，本地重新绑定并验证；业务额度与timeZone沿用，不能借安全配置重建清空历史用量。
 - 激活前检查所需Profile/工具/输入、IM绑定/回信目标；已绑定平台账号重新whoami核验稳定ID，无法核验则不能激活其平台写能力。允许只激活已验证的非平台能力，但必须在activation能力清单中持久禁用未核验平台，不默认为全量通过。
-- `FR-MIG-007`：activate须核对健康恢复点、无匹配RecoveryHold、本地导入摘要、源交接回执、目标ID及操作者对源端已停写的确认。先持久记录激活决定，再开放本机允许的派发能力；断电后按同migrationId幂等恢复，不重新覆盖最新账本。相同票据不同目标拒绝。
+- `FR-MIG-007`：activate须核对健康恢复点、无匹配RecoveryHold、本地导入摘要、源交接回执、目标ID及操作者对源端已停写的确认。先持久记录激活决定，再开放本机允许的派发能力；断电后按同migrationId幂等恢复，不重新覆盖最新账本。相同票据不同目标拒绝。全新目标在imported/validated阶段、首次activate之前，允许本地owner通过受信CLI为已导入账本创建首个恢复点（目标须配置自己的独立目的地并由owner核验故障域）；该恢复点只用于满足激活前置，不开放派发，源端retired后不得再创建。
 - 交接回执及sha256用于本地受信流程的一致性检查，不宣称能认证任意网络来源或抵抗恶意owner伪造；无中心协调无法阻止绕流程复制后双启。
 
 #### 已激活目标的逐项能力重验

@@ -1,6 +1,6 @@
 # T12.3 真实 Windows ↔ Linux 跨 OS 停机迁移方案（2026-11-11）
 
-> 状态：**方案待 owner 审核，未执行**。本文只给出可执行步骤、验收矩阵、回滚与风险，不构成迁移/真实写授权。
+> 状态：**owner 已确认 4 项决策（2026-11-12）；执行卡见 [T12_3_EXEC_CARD_2026-11-12.md](T12_3_EXEC_CARD_2026-11-12.md)**。执行前复核修复了 F11（目标首次激活恢复点）与 F12（CLI import 无 runtime 崩溃）；目标 Linux 侧独立备份目的地仍未定，完整验收暂不开工，路线 B 部分验收可执行。本文保留 2026-11-11 方案正文，命令差异以执行卡为准。
 > 目标环境：本机 Windows（生产数据）↔ 用户提供的腾讯云 Linux `42.193.20.17`（Ubuntu 24.04，sudo 可用）。
 
 ## 0. 结论摘要（给决策者）
@@ -33,7 +33,7 @@
 - `migrationId`、`workspaceId`、`sourceInstanceId`、`targetInstanceId`、`historyEpoch`、`cutEventSeq`、`configRevision`、`timeZone`、`stableAccountRefs`、`profileDependencies`、`recoveryRefs`、`fileCount/totalBytes`、逐文件 `sha256`、`snapshotHash`。
 - 包内文件角色：`state`（脱敏 state.json）、`journal`（全部归档段）、`diary`、`artifacts`、`bundle/posts`；**不含** config/credentials/backup-policy/instance。
 - 导入时：目标目录必须为空；自动生成新 `instanceId`（status=`paused`，`scheduledDisabled=true`）；所有 approval `usableForAuthorization=false`、`nonceHash=null`；未结算 Task 追加 migration hold；pending/sending outbox 置 `suppressed`；production `readyForPublish=false`；bindings `requiresReverification=true`。
-- 激活前置：`validate` 通过 + source release receipt 与 package/target 绑定 + 显式 `--source-stopped`。
+- 激活前置：`validate` 通过 + source release receipt 与 package/target 绑定 + 显式 `--source-stopped` + **目标侧健康独立恢复点**（2026-11-12 F11 修复后，全新目标可在 imported/validated 阶段由本地 owner 创建首个恢复点；见执行卡 §1.1/§4.4）。
 - 释放前不可 export 的状态：存在 live local executions、未结算 executions、in-flight operations、pending artifact imports、pending diary commits、journal 未归档、无健康独立恢复点（`BACKUP_UNPROTECTED/BACKUP_STALE`）。
 
 ## 3. 执行前提与决策门
@@ -44,7 +44,8 @@
 | G1 | 目标环境就绪 | Node 22+ 安装并校验、代码同 commit、包/目标目录权限就绪、SSH 可用 |
 | G2 | 源端 preflight | `status`：active、unknown=0、unsettled=0、journalPending=0；`migration status`=active；无 live execution；**DSH 已关闭且不再连源库** |
 | G3 | 健康独立恢复点 | 真实 TTY 执行 `backup create --kind ledger --confirm`，`status` 显示 `protected` 且 age < 20min |
-| G4 | 人机可用性 | owner 能在两侧真实 TTY 连续完成约 10 次一次性挑战；迁移窗口内不接受外部写入 |
+| G4 | 人机可用性 | owner 能在两侧真实 TTY 连续完成约 18 次一次性挑战（含回迁）；迁移窗口内不接受外部写入 |
+| G5 | 目标侧独立恢复点（2026-11-12 新增） | 目标 Linux 有与目标不同故障域的独立目的地（执行卡 §1.3 X1/X2/X3）；owner 核验后写目标 policy 并创建目标首个恢复点（F11 修复后支持）；X4 时改走路线 B 部分验收 |
 
 ## 4. 阶段步骤（可执行 runbook）
 
@@ -85,7 +86,7 @@ node cli.mjs backup create --kind ledger --confirm
 node cli.mjs migration prepare --target instance_linux_target_20261111 --confirm
 
 # 2.2 导出迁移包（--out 必须是不在 dataDir 内的空目录；推荐绝对路径）
-node cli.mjs migration export <migrationId> --out D:\dsh-migration-20261111\package --confirm
+node cli.mjs migration export <migrationId> --out D:\dsh-migration-20261111\package
 
 # 2.3 发布释放（源实例 retired；receipt.json 写入 package 目录）
 node cli.mjs migration release <migrationId> --confirm
@@ -128,7 +129,7 @@ cp /home/ubuntu/dsh-migration/config.json /home/ubuntu/dsh-bili/data/config.json
 install -m 600 /home/ubuntu/dsh-migration/credentials.json /home/ubuntu/dsh-bili/data/credentials.json
 
 # 4.3 校验（目标 instance 应为 validated，allowedCapabilities=core:read/core:write）
-$NODE cli.mjs migration validate <migrationId> --data-dir /home/ubuntu/dsh-bili/data --confirm
+$NODE cli.mjs migration validate <migrationId> --data-dir /home/ubuntu/dsh-bili/data
 
 # 4.4 激活（必须带 --source-stopped，receipt 使用包内 receipt.json）
 $NODE cli.mjs migration activate <migrationId> --receipt /home/ubuntu/dsh-migration/transfer/package/receipt.json --data-dir /home/ubuntu/dsh-bili/data --source-stopped --confirm
@@ -244,17 +245,19 @@ node cli.mjs migration rollback <migrationId> `
 - 源端 preflight + 新鲜保护点：10 分钟；
 - prepare/export/release（3 次 TTY + 等待）：20–40 分钟；
 - 传输与校验：10 分钟；
-- 目标 import/validate/activate（3 次 TTY）：20–40 分钟；
+- 目标 import + policy + 首个恢复点 + validate/activate（约 5 次 TTY）：30–50 分钟（F11 修复后）；
 - 验收矩阵 + 重启验证：30 分钟；
-- 可选 reauthorize（1 次 TTY）/返回迁移另计 1–2 小时。
-- **合计：约 2–4 小时；TTY 挑战约 7–10 次（不含可选返回）。**
+- 可选 reauthorize（1 次 TTY）：10 分钟；回迁 Windows（prepare/export/release + import/validate/activate，约 8 次 TTY）：1.5–2.5 小时。
+- **合计（含回迁）：约 5–7 小时；TTY 挑战约 18 次。仅正向、不回迁约 3–4 小时 / 10–12 次。** 实际以执行卡 §3/§4 为准。
 
-## 9. 待 owner 确认（执行前必须回答）
+## 9. owner 决策记录（2026-11-12）
 
-1. **目标标签**：`instance_linux_target_20261111` 是否可用（仅作迁移绑定标签）？
-2. **是否要求返回 Windows**：验收后 Linux 作为新生产，还是必须回迁（Phase 7A）？
-3. **平台只读能力重授权**：是否允许把 B 站 Cookie 复制到 Linux 并执行 `account verify` + `platform:bilibili` reauthorize（只读）？
-4. **时间窗与操作人**：由你本人在两侧 TTY 执行；迁移窗口内 DSH 关闭、无写操作。确认窗口（建议 ≥4 小时）。
+1. **目标标签**：可按日期变更 → 本次使用 `instance_linux_target_20261112`。
+2. **是否要求返回 Windows**：**必须回迁 Windows**（执行卡 §4 A6–A8）。
+3. **平台只读能力重授权**：**允许**复制 B 站 Cookie 到 Linux 做 `account verify` + `platform:bilibili` 只读重授权；目标不做真实平台写；完成后轮换 Cookie。
+4. **时间窗与操作人**：确认可行；本人两侧真实 TTY 执行，DSH 关闭、无外部写。
+
+**新增未决项（执行卡 §1.3/§8）**：目标 Linux 侧独立备份目的地（X1 COS / X2 另一主机 / X3 Windows-WSL 反向隧道 / X4 只做路线 B）；以及确认接受 F11/F12 修复。
 
 ## 10. 明确不在本方案范围
 

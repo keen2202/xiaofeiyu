@@ -104,7 +104,10 @@ export class MigrationService {
   }
 
   _config() {
-    return this.configService.get();
+    if (this.configService) return this.configService.get();
+    // Standalone CLI import runs before any runtime/data directory exists; the
+    // package bounds still need the documented default limits to fail closed.
+    return { migration: { mode: 'offline', directory: '', maxFiles: 100000, maxTotalBytes: 68719476736 } };
   }
 
   async _requireHuman(humanContext, binding) {
@@ -765,6 +768,9 @@ export class MigrationService {
       const sourceState = verified.state;
       const targetState = deepClone(sourceState);
       const targetInstanceId = `instance_${randomId('i').split('_').at(-1)}`;
+      // The package strips the source's backup index, but v3 state keeps an
+      // (empty) index object so the target can seed its own first recovery point.
+      if (!targetState.backups || typeof targetState.backups !== 'object') targetState.backups = {};
       targetState.migration = {
         phase: 'imported',
         id: manifest.migrationId,
