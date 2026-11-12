@@ -45,7 +45,7 @@
 | G2 | 源端 preflight | `status`：active、unknown=0、unsettled=0、journalPending=0；`migration status`=active；无 live execution；**DSH 已关闭且不再连源库** |
 | G3 | 健康独立恢复点 | 真实 TTY 执行 `backup create --kind ledger --confirm`，`status` 显示 `protected` 且 age < 20min |
 | G4 | 人机可用性 | owner 能在两侧真实 TTY 连续完成约 18 次一次性挑战（含回迁）；迁移窗口内不接受外部写入 |
-| G5 | 目标侧独立恢复点（2026-11-12 新增） | 目标 Linux 有与目标不同故障域的独立目的地（执行卡 §1.3 X1/X2/X3）；owner 核验后写目标 policy 并创建目标首个恢复点（F11 修复后支持）；X4 时改走路线 B 部分验收 |
+| G5 | 目标侧独立恢复点（2026-11-12 新增；已解决） | **owner 已确认 X1**：COS 独立前缀 `/cos-backup/dsh-bili-backups`（实测连通/读写/改名/集成探针通过）；目标 policy 模板已备（[backup-policy.cos-target.template.json](backup-policy.cos-target.template.json)）；目标 activation 前写 policy 并创建首个恢复点（F11 修复后支持） |
 
 ## 4. 阶段步骤（可执行 runbook）
 
@@ -256,8 +256,9 @@ node cli.mjs migration rollback <migrationId> `
 2. **是否要求返回 Windows**：**必须回迁 Windows**（执行卡 §4 A6–A8）。
 3. **平台只读能力重授权**：**允许**复制 B 站 Cookie 到 Linux 做 `account verify` + `platform:bilibili` 只读重授权；目标不做真实平台写；完成后轮换 Cookie。
 4. **时间窗与操作人**：确认可行；本人两侧真实 TTY 执行，DSH 关闭、无外部写。
+5. **目标侧独立目的地（G5）**：确认选 **X1**——腾讯云 COS 桶 `claw-cos-data-1407061106` 的独立前缀 `/cos-backup/dsh-bili-backups`（桶内 `/claw2/dsh-bili-backups`）。2026-11-12 已实测连通/读写/改名/原子替换与真实 BackupService 集成探针（见 [COS_BUCKET_PROBE_2026-11-12.md](COS_BUCKET_PROBE_2026-11-12.md)），费用估算长期约 ¥1–1.5/月；目标 policy 模板见 [backup-policy.cos-target.template.json](backup-policy.cos-target.template.json)。
 
-**新增未决项（执行卡 §1.3/§8）**：目标 Linux 侧独立备份目的地（X1 COS / X2 另一主机 / X3 Windows-WSL 反向隧道 / X4 只做路线 B）；以及确认接受 F11/F12 修复。
+**已解决/剩余**：F11/F12 修复已提交回归（`ea13ec8` 基线）；X1 已确认；剩余仅路线 B 执行与路线 A 时间窗。
 
 ## 10. 明确不在本方案范围
 

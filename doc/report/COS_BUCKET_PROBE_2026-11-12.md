@@ -89,8 +89,10 @@
 
 ## 6. 结论与建议
 
-1. **技术上可用**：`/cos-backup` 满足 T12.3 X1 需要的“目标 Linux 侧、与目标主机不同故障域的独立目的地”条件（COS 托管存储 + 内网 endpoint；owner 可据此核验独立故障域），建议使用独立前缀 `/cos-backup/dsh-bili-backups`。
-2. **费用极低**：路线 A 验收可忽略（0 元级）；若作为长期独立备份域，当前规模约 **¥1–1.5/月**；主要成本来自 cosfs 目录改名的逐对象请求，而非存储容量。
-3. **运维前提**：执行前确认 `mountpoint /cos-backup` 与 `systemctl is-active cos-backup`；不要在同一前缀同时放 immich 与 DSH 备份；如需降低长期成本，可把调度降为 30–60 分钟或减少 full 媒体保留。
-4. **边界**：COS 侧目录改名非原子，备份完整性仍由本项目的 verify/recovery 保证；本报告只判断连通性与费用，不改变 T12.3 的 TTY/人类证明/保护点要求。
-5. **待 owner 确认**：是否把 X1（该桶 + 独立前缀）作为 T12.3 路线 A 的目标侧独立目的地；若是，后续按执行卡 §4.4 写目标 policy（`destinationRoot=/cos-backup/dsh-bili-backups`、`sourceRoot=/home/ubuntu/dsh-bili/data`）并创建目标首个恢复点（F11 路径）。
+1. **技术上可用**：`/cos-backup` 满足 T12.3 X1 需要的“目标 Linux 侧、与目标主机不同故障域的独立目的地”条件（COS 托管存储 + 内网 endpoint；owner 可据此核验独立故障域）。
+2. **owner 已确认（2026-11-12）**：把该桶独立前缀 **`/cos-backup/dsh-bili-backups`**（桶内 `/claw2/dsh-bili-backups`）定为路线 A 的 X1 目的地；该前缀已创建，当前为空。
+3. **真实 BackupService 集成探针通过**：在目标机用真实 `BackupService` 对 `destinationRoot=/cos-backup/dsh-bili-backups/.probe-*` 执行 `backup create → verify → getProtection`，结果 `createStatus=verified`、`protectionStatus=protected`、`verifyOk=true`、约 3.5s（新建空账本，2 对象），探针与目标前缀均已清理（证据 [cos-backup-integration-probe-2026-11-12.json](cos-backup-integration-probe-2026-11-12.json)）。注意：该探针的人类证明与故障域核验是**测试夹具**，不构成真实验收。
+4. **费用极低**：路线 A 验收可忽略（0 元级）；若作为长期独立备份域，当前规模约 **¥1–1.5/月**；主要成本来自 cosfs 目录改名的逐对象请求，而非存储容量。
+5. **运维前提**：执行前确认 `mountpoint /cos-backup` 与 `systemctl is-active cos-backup`；不要在同一前缀同时放 immich 与 DSH 备份；如需降低长期成本，可把调度降为 30–60 分钟或减少 full 媒体保留。
+6. **边界**：COS 侧目录改名非原子，备份完整性仍由本项目的 verify/recovery 保证；本报告只判断连通性、兼容性与费用，不改变 T12.3 的 TTY/人类证明/保护点要求。
+7. **目标侧执行**：按执行卡 §4.4 使用目标 policy 模板 [backup-policy.cos-target.template.json](backup-policy.cos-target.template.json)（把 `REPLACE_WITH_UTC_NOW` 换成真实 UTC 时间后再经 TTY `backup policy` 写入），然后 `backup create`（F11 路径）→ `validate` → `activate`。

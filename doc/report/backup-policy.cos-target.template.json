@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "scheduleEnabled": false,
+  "destinationRoot": "/cos-backup/dsh-bili-backups",
+  "failureDomain": "Tencent COS bucket claw-cos-data-1407061106 prefix /claw2/dsh-bili-backups (managed object storage, ap-chengdu; independent of the CVM host disk)",
+  "failureDomainVerification": {
+    "independent": true,
+    "sourceRoot": "/home/ubuntu/dsh-bili/data",
+    "destinationRoot": "/cos-backup/dsh-bili-backups",
+    "verifiedBy": "白阑王",
+    "verifiedAt": "REPLACE_WITH_UTC_NOW"
+  },
+  "verifiedBy": "白阑王",
+  "verifiedAt": "REPLACE_WITH_UTC_NOW",
+  "intervalMinutes": 15,
+  "maxPointAgeMinutes": 60,
+  "fullIntervalHours": 24,
+  "keepRecent": 8,
+  "keepDaily": 7,
+  "keepWeekly": 4,
+  "autoPrune": false,
+  "checkpointTimeoutMs": 5000
+}

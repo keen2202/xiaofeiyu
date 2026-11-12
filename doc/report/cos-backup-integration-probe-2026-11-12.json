@@ -1,0 +1,25 @@
+{
+  "recordedAt": "2026-11-12T15:17:00Z",
+  "kind": "offline-integration-probe",
+  "claim": "real BackupService can publish and verify a ledger point on the cosfs-mounted COS prefix; human proof and failure-domain verification are TEST FIXTURES in this probe, not real acceptance evidence",
+  "host": "VM-0-5-ubuntu",
+  "bucket": "claw-cos-data-1407061106",
+  "prefix": "/claw2/dsh-bili-backups",
+  "destinationRoot": "/cos-backup/dsh-bili-backups/.probe-1794496618873",
+  "dataDir": "/tmp/cos-bili-probe-9hExs1",
+  "result": {
+    "ok": true,
+    "createStatus": "verified",
+    "backupId": "backup_8720ee30210c4c52b63d8ba5c4b3f1e7",
+    "createMs": 3529,
+    "filesInPoint": 2,
+    "protectionStatus": "protected",
+    "verifyOk": true,
+    "leftoversAfterCleanup": 0
+  },
+  "notes": [
+    "Fresh probe ledger contains only state.json and manifest.json (2 objects), so createMs is not the production 71-object timing; see cos-bucket-probe-2026-11-12.json for per-object cost.",
+    "After the probe the dedicated prefix /cos-backup/dsh-bili-backups exists and is empty; it is the owner-confirmed X1 destination root.",
+    "The probe policy file lived in the temporary data directory and was removed; it did not touch the production backup policy."
+  ]
+}
