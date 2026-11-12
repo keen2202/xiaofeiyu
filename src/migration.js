@@ -1100,7 +1100,16 @@ export class MigrationService {
       if (draft.recovery?.phase !== 'normal') throw new AppError('RECOVERY_GAP', 'use recovery authorization for disaster recovery');
     };
     assertTarget(state, instance);
-    const result = await this.activationChecks({ state, instance, dataDir: this.dataDir, requestedCapabilities: capabilities });
+    const owner = state.principals[principal.id];
+    if (!owner || owner.revokedAt || owner.kind !== 'human' || owner.role !== 'owner' || !owner.scopes?.includes('*') || principal.bindingId) {
+      throw new AppError('FORBIDDEN', 'current local owner is required');
+    }
+    // This owner supplied fresh proof above. Expose that fact only to this
+    // verification attempt; persist it after all checks and the grant commit.
+    // Other imported principals and every old binding remain unverified.
+    const verificationState = deepClone(state);
+    verificationState.principals[principal.id].requiresReverification = false;
+    const result = await this.activationChecks({ state: verificationState, instance, dataDir: this.dataDir, requestedCapabilities: capabilities });
     if (capabilities.some(capability => !result.capabilities.includes(capability))) {
       throw new AppError('MIGRATION_BLOCKED', 'requested capabilities failed re-verification', { details: { blocked: result.blocked } });
     }

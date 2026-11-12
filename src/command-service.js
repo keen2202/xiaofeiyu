@@ -1,4 +1,5 @@
 import { AppError, redactSecrets } from './errors.js';
+import { imBindingFailure } from './identity.js';
 import {
   buildRequestKey,
   computeInputHash,
@@ -130,10 +131,7 @@ export class CommandService {
       throw new AppError('CONFIG_INVALID', 'production input.mode conflicts with envelope mode');
     }
     const state = await this.store.getSnapshot();
-    if (!principal || principal.revokedAt) throw new AppError('FORBIDDEN', 'principal is missing or revoked');
-    if (principal.workspaceId && principal.workspaceId !== state.workspaceId) {
-      throw new AppError('FORBIDDEN', 'principal belongs to another workspace');
-    }
+    principal = this._currentPrincipal(principal, state, sourceKind);
     this._authorize(request, principal, state, sourceKind);
     const requestKey = buildRequestKey({
       workspaceId: state.workspaceId,
@@ -156,6 +154,8 @@ export class CommandService {
     }
     return this._withLock(requestKey, async () => {
       const fresh = await this.store.getSnapshot();
+      principal = this._currentPrincipal(principal, fresh, sourceKind);
+      this._authorize(request, principal, fresh, sourceKind);
       const existing = fresh.requests[requestKey];
       if (existing) {
         if (existing.inputHash !== requestHash) {
@@ -195,6 +195,8 @@ export class CommandService {
         };
       }
       await this.store.transaction(async (draft, tx) => {
+        principal = this._currentPrincipal(principal, draft, sourceKind);
+        this._authorize(request, principal, draft, sourceKind);
         if (['browse.run', 'comment.draft', 'dm.send', 'production.create', 'publish.create'].includes(request.action)) tx.assertBusinessAcceptance();
         if (draft.requests[requestKey]) {
           throw new AppError('DUPLICATE_OPERATION', 'concurrent request reservation exists', { retryable: true });
@@ -224,7 +226,9 @@ export class CommandService {
         });
       });
       try {
-        this._authorize(request, principal, state, sourceKind);
+        const dispatchState = await this.store.getSnapshot();
+        principal = this._currentPrincipal(principal, dispatchState, sourceKind);
+        this._authorize(request, principal, dispatchState, sourceKind);
         const targetTaskId = request.input.taskId || fresh.approvals[request.input.approvalId]?.taskId || null;
         const outcome = await this.store.commandContext.run(
           { requestKey, taskId: targetTaskId, inboxKey, notificationTarget, bindingId: principal.bindingId || null },
@@ -270,15 +274,49 @@ export class CommandService {
     });
   }
 
+  _currentPrincipal(supplied, state, sourceKind) {
+    const current = state.principals?.[supplied?.id];
+    if (!supplied || supplied.revokedAt || !current || current.revokedAt ||
+        (supplied.workspaceId && supplied.workspaceId !== state.workspaceId) ||
+        (current.workspaceId && current.workspaceId !== state.workspaceId)) {
+      throw new AppError('FORBIDDEN', 'current principal is unavailable');
+    }
+    let scopes = current.scopes || [];
+    if (current.requiresReverification && (supplied.bindingId || current.kind !== 'human' ||
+        current.role !== 'owner' || !scopes.includes('*'))) {
+      throw new AppError('FORBIDDEN', 'principal requires re-verification');
+    }
+    if (supplied.bindingId) {
+      const binding = state.bindings[supplied.bindingId];
+      if (imBindingFailure(state, binding, supplied.bindingContext) || binding.principalId !== current.id) {
+        throw new AppError('FORBIDDEN', 'current IM authority is unavailable');
+      }
+      scopes = binding.scopes || [];
+    } else if (sourceKind === 'im') {
+      throw new AppError('FORBIDDEN', 'IM command requires a current binding');
+    }
+    // The trusted caller may deliberately supply fewer scopes than the ledger.
+    const ceiling = supplied.scopes || [];
+    scopes = ceiling.includes('*') ? scopes : scopes.includes('*') ? ceiling : scopes.filter(scope => ceiling.includes(scope));
+    return { ...deepClone(current), scopes, bindingId: supplied.bindingId || null,
+      bindingContext: supplied.bindingContext };
+  }
+
   _authorize(request, principal, state, sourceKind) {
+    if (sourceKind === 'im' && !IM_ACTIONS.has(request.action)) {
+      throw new AppError('FORBIDDEN', 'action is not available over IM');
+    }
+    // Imported local owners must still be able to inspect/rebind the target.
+    // This does not authorize ordinary business work with imported permissions.
+    if (principal.requiresReverification && !READ_ONLY_ACTIONS.has(request.action) &&
+        !/^(migration\.|recovery\.|backup\.|account\.|im\.|config\.update$)/.test(request.action)) {
+      throw new AppError('FORBIDDEN', 'principal requires re-verification');
+    }
     if (OWNER_ONLY_ACTIONS.has(request.action)) {
       if (principal.kind !== 'human' || principal.role !== 'owner' || !principal.scopes?.includes('*')) {
         throw new AppError('FORBIDDEN', 'local owner is required for this action');
       }
       return true;
-    }
-    if (sourceKind === 'im' && !IM_ACTIONS.has(request.action)) {
-      throw new AppError('FORBIDDEN', 'action is not available over IM');
     }
     const scope = {
       'browse.run': 'browse.run',
@@ -477,6 +515,8 @@ export class CommandService {
 
   async listTasks(principal, { limit = 50 } = {}) {
     const state = await this.store.getSnapshot();
+    principal = this._currentPrincipal(principal, state);
+    this.identity.authorize(principal, 'task.read.own');
     const isOwner = principal.kind === 'human' && principal.role === 'owner' && principal.scopes?.includes('*');
     const tasks = Object.values(state.tasks)
       .filter((task) => isOwner || task.principalId === principal.id)
@@ -565,6 +605,8 @@ export class CommandService {
 
   async getTask(taskId, principal) {
     const state = await this.store.getSnapshot();
+    principal = this._currentPrincipal(principal, state);
+    this.identity.authorize(principal, 'task.read.own');
     const task = state.tasks[taskId];
     if (!task) throw new AppError('CAPABILITY_UNSUPPORTED', 'task not found', { details: { reason: 'task_not_found' } });
     const isOwner = principal.kind === 'human' && principal.role === 'owner' && principal.scopes?.includes('*');
@@ -574,6 +616,8 @@ export class CommandService {
 
   async cancelTask(taskId, principal) {
     const state = await this.store.getSnapshot();
+    principal = this._currentPrincipal(principal, state);
+    this.identity.authorize(principal, 'task.cancel.own');
     const task = state.tasks[taskId];
     if (!task) throw new AppError('CAPABILITY_UNSUPPORTED', 'task not found', { details: { reason: 'task_not_found' } });
     const isOwner = principal.kind === 'human' && principal.role === 'owner' && principal.scopes?.includes('*');
@@ -582,6 +626,8 @@ export class CommandService {
       return this.services.production.cancel({ taskId, principal });
     }
     return this.store.transaction(async (draft, tx) => {
+      principal = this._currentPrincipal(principal, draft);
+      this._authorize({ action: 'task.cancel' }, principal, draft);
       const current = draft.tasks[taskId];
       this.taskManager.requestCancel(tx, current, { reason: 'human cancel request', actor: principal.id });
       tx.appendEvent({ type: 'task.cancel.requested', actor: principal.id, taskId, payload: {} });

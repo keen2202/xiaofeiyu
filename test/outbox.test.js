@@ -53,6 +53,30 @@ async function enqueue(harness, binding, summary = 'reply') {
   );
 }
 
+test('pending notifications are suppressed on principal, binding or audience invalidation', async () => {
+  const cases = [
+    ['principal_unavailable', (state, b) => { state.principals[b.principalId].revokedAt = '2026-11-07T00:00:00Z'; }],
+    ['principal_requires_reverification', (state, b) => { state.principals[b.principalId].requiresReverification = true; }],
+    ['binding_requires_reverification', (state, b) => { state.bindings[b.bindingId].requiresReverification = true; }],
+    ['conversation_unauthorized', (state, b) => { state.bindings[b.bindingId].conversationIds = ['new-conversation']; }],
+    ['binding_identity_changed', (state, b) => { state.bindings[b.bindingId].botAccountId = 'other-bot'; }]
+  ];
+  for (const [reason, invalidate] of cases) {
+    const { harness, binding } = await setup();
+    const channel = makeMockChannel();
+    try {
+      const notification = await enqueue(harness, binding);
+      await harness.store.transaction(async state => invalidate(state, binding));
+      const result = await harness.effectGateway.dispatchNotification(notification.id, channel);
+      assert.equal(result.notification.status, 'suppressed', reason);
+      assert.equal(result.notification.suppressionReason, reason);
+      assert.equal(result.notification.attempts, 0);
+      assert.equal(channel.calls.send.length, 0);
+      if (reason !== 'binding_identity_changed') await assert.rejects(enqueue(harness, binding), { code: 'FORBIDDEN' });
+    } finally { await harness.cleanup(); }
+  }
+});
+
 test('notification dispatch is separate from business settlement and settles sent', async () => {
   const { harness, binding } = await setup();
   const channel = makeMockChannel();

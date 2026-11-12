@@ -38,6 +38,21 @@ export const LOCAL_OWNER_SCOPES = Object.freeze(['*']);
 const TASK_SCOPES = Object.freeze({ browse: 'browse.run', comment: 'comment.draft', dm: 'dm.send',
   diary: 'diary.generate.own', production: 'production.create', publish: 'publish.create' });
 
+// Shared by inbound IM, migration checks and outbox dispatch. Never trust a
+// cached binding after revocation, migration or audience changes.
+export function imBindingFailure(state, binding, target = {}) {
+  if (!binding || binding.revokedAt) return 'binding_revoked';
+  if (binding.requiresReverification) return 'binding_requires_reverification';
+  const principal = state.principals?.[binding.principalId];
+  if (!principal || principal.revokedAt || (principal.workspaceId && principal.workspaceId !== state.workspaceId)) return 'principal_unavailable';
+  if (principal.requiresReverification) return 'principal_requires_reverification';
+  if (target.conversationId && !binding.conversationIds?.includes(target.conversationId)) return 'conversation_unauthorized';
+  for (const key of ['adapterId', 'botAccountId', 'senderRef']) {
+    if (target[key] && target[key] !== binding[key]) return 'binding_identity_changed';
+  }
+  return null;
+}
+
 // Read current ledger authority at the dispatch boundary, never a caller's cached principal.
 export function assertTaskAuthority(state, task) {
   const principal = state.principals?.[task?.principalId];
@@ -260,7 +275,7 @@ export class IdentityService {
   resolveImPrincipal(tx, { adapterId, botAccountId, senderRef, conversationId }) {
     const bindings = Object.values(tx.state.bindings).filter(
       (binding) =>
-        !binding.revokedAt &&
+        !imBindingFailure(tx.state, binding) &&
         binding.adapterId === adapterId &&
         binding.botAccountId === botAccountId &&
         binding.senderRef === senderRef &&
@@ -272,7 +287,8 @@ export class IdentityService {
     const binding = bindings[0];
     const principal = tx.state.principals[binding.principalId];
     if (!principal || principal.revokedAt) throw new AppError('FORBIDDEN', 'bound principal is unavailable');
-    const scoped = { ...deepClone(principal), scopes: [...new Set(binding.scopes)], bindingId: binding.bindingId };
+    const scoped = { ...deepClone(principal), scopes: [...new Set(binding.scopes)], bindingId: binding.bindingId,
+      bindingContext: { adapterId, botAccountId, senderRef, conversationId } };
     return { principal: scoped, binding: deepClone(binding) };
   }
 }

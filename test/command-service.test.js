@@ -33,6 +33,73 @@ function envelope(action, input, mode = 'go', requestId = 'r1') {
   return { schemaVersion: 1, requestId, action, input, mode };
 }
 
+test('revoked cached principals cannot read tasks or replay an accepted command', async () => {
+  const { harness, command, adapter } = await setup();
+  try {
+    const request = envelope('browse.run', {}, 'go', 'cached-owner');
+    const first = await command.execute(request, harness.owner, { trusted: true });
+    const reads = adapter.calls.discover.length;
+    await harness.store.transaction(async state => { state.principals[harness.owner.id].revokedAt = harness.now().toISOString(); });
+    await assert.rejects(command.execute(request, harness.owner, { trusted: true }), { code: 'FORBIDDEN' });
+    await assert.rejects(command.getTask(first.taskId, harness.owner), { code: 'FORBIDDEN' });
+    await assert.rejects(command.listTasks(harness.owner), { code: 'FORBIDDEN' });
+    assert.equal(adapter.calls.discover.length, reads);
+  } finally { await harness.cleanup(); }
+});
+
+test('commands honor current scope reductions and preserve the caller scope ceiling', async () => {
+  const { harness, command, adapter } = await setup();
+  try {
+    await assert.rejects(command.execute(envelope('browse.run', {}), { ...harness.owner, scopes: ['task.read.own'] }, { trusted: true }), { code: 'FORBIDDEN' });
+    await harness.store.transaction(async state => { state.principals[harness.owner.id].scopes = ['task.read.own']; });
+    await assert.rejects(command.execute(envelope('browse.run', {}), harness.owner, { trusted: true }), { code: 'FORBIDDEN' });
+    assert.equal((await command.listTasks(harness.owner)).count, 0);
+    assert.equal(adapter.calls.discover.length, 0);
+    assert.equal(Object.keys((await harness.snapshot()).requests).length, 0);
+  } finally { await harness.cleanup(); }
+});
+
+test('revocation while a command waits on its request lock prevents reservation', async () => {
+  const { harness, command, adapter } = await setup();
+  try {
+    let release, entered;
+    const enteredLock = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const withLock = command._withLock.bind(command);
+    command._withLock = (key, fn) => withLock(key, async () => { entered(); await gate; return fn(); });
+    const pending = command.execute(envelope('browse.run', {}), harness.owner, { trusted: true });
+    const denied = assert.rejects(pending, { code: 'FORBIDDEN' });
+    await enteredLock;
+    await harness.store.transaction(async state => { state.principals[harness.owner.id].revokedAt = harness.now().toISOString(); });
+    release();
+    await denied;
+    assert.equal(adapter.calls.discover.length, 0);
+    assert.equal(Object.keys((await harness.snapshot()).requests).length, 0);
+  } finally { await harness.cleanup(); }
+});
+
+test('cached IM commands recheck binding scope and conversation without owner elevation', async () => {
+  const { harness, command } = await setup();
+  try {
+    const principal = await harness.store.transaction(async (state, tx) => {
+      harness.identity.bindIm(tx, { bindingId: 'cached-binding', adapterId: 'dsh-im', botAccountId: 'bot',
+        senderRef: 'sender', conversationIds: ['conv'], principalId: harness.owner.id, scopes: ['task.read.own'] });
+      return harness.identity.resolveImPrincipal(tx, { adapterId: 'dsh-im', botAccountId: 'bot', senderRef: 'sender', conversationId: 'conv' }).principal;
+    });
+    const request = envelope('task.list', {}, 'dry');
+    const options = { trusted: true, sourceKind: 'im' };
+    assert.equal((await command.execute(request, principal, options)).accepted, true);
+    await harness.store.transaction(async state => { state.bindings['cached-binding'].scopes = []; });
+    await assert.rejects(command.execute(request, principal, options), { code: 'FORBIDDEN' });
+    await harness.store.transaction(async state => {
+      state.bindings['cached-binding'].scopes = ['task.read.own'];
+      state.bindings['cached-binding'].conversationIds = ['other'];
+    });
+    await assert.rejects(command.execute(request, principal, options), { code: 'FORBIDDEN' });
+    await assert.rejects(command.execute(envelope('config.update', {}), harness.owner, options), { code: 'FORBIDDEN' });
+  } finally { await harness.cleanup(); }
+});
+
 test('same request key creates one task and replays the stored receipt', async () => {
   const { harness, command } = await setup();
   try {

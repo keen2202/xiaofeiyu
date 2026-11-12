@@ -1,4 +1,5 @@
 import { AppError } from '../../errors.js';
+import { imBindingFailure } from '../../identity.js';
 import { deepClone, jcsHash, nowIso, truncateText } from '../../utils.js';
 
 const RELIABLE_READ_ACTIONS = new Set(['task.get', 'task.list', 'status.get']);
@@ -207,7 +208,7 @@ export class ImBridge {
         const old = previous.tasks[task.id];
         if (old?.notificationTarget && old.status === task.status && old.revision === task.revision) continue;
         const binding = tx.state.bindings[target.bindingId];
-        if (!binding || binding.revokedAt || !binding.conversationIds.includes(target.conversationId)) continue;
+        if (imBindingFailure(tx.state, binding, target)) continue;
         const notification = this.effectGateway.appendNotification(tx, {
           ...target, taskId: task.id, taskRevision: task.revision,
           summary: `Task ${task.id}: ${task.status}`, deferred: true

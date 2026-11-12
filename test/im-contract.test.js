@@ -91,6 +91,42 @@ const trusted = {
   hostProof: { kind: 'test', ok: true }
 };
 
+test('imported IM bindings stay blocked after owner verification and a fresh binding is selectable', async () => {
+  const { harness, bridge, binding, calls } = await setup();
+  try {
+    await harness.store.transaction(async state => {
+      state.bindings[binding.bindingId].requiresReverification = true;
+      state.principals[binding.principalId].requiresReverification = false;
+    });
+    await assert.rejects(bridge.ingest(event(), trusted), { code: 'FORBIDDEN' });
+    assert.equal(calls.length, 0);
+    assert.equal(Object.keys((await harness.snapshot()).inboxKeys).length, 0);
+    await harness.store.transaction(async (state, tx) => harness.identity.bindIm(tx, { ...binding, bindingId: 'fresh-binding' }));
+    assert.equal((await bridge.ingest(event(), trusted)).accepted, true);
+    assert.equal(calls[0].principal.bindingId, 'fresh-binding');
+    await harness.store.transaction(async state => { state.principals[binding.principalId].requiresReverification = true; });
+    await assert.rejects(bridge.ingest(event(), trusted), { code: 'FORBIDDEN' });
+    assert.equal(calls.length, 1);
+  } finally { await bridge.stop(); await harness.cleanup(); }
+});
+
+test('revoked notification recipients do not abort a business task state change', async () => {
+  const { harness, bridge, binding } = await setup();
+  try {
+    const task = await harness.store.transaction(async (state, tx) => harness.taskManager.create(tx, {
+      kind: 'comment', principalId: harness.owner.id, inputHash: 'jcs-sha256-v1:' + 'a'.repeat(64)
+    }));
+    await harness.store.transaction(async state => {
+      state.principals[binding.principalId].revokedAt = harness.now().toISOString();
+      state.tasks[task.id].notificationTarget = { bindingId: binding.bindingId, conversationId: 'conv1' };
+      state.tasks[task.id].revision++;
+    });
+    const state = await harness.snapshot();
+    assert.equal(state.tasks[task.id].revision, task.revision + 1);
+    assert.equal(Object.keys(state.outbox).length, 0);
+  } finally { await bridge.stop(); await harness.cleanup(); }
+});
+
 test('adapter probe is read-only and unavailable without a host', async () => {
   const none = new DshImChannelAdapter({ host: null });
   const unavailable = await none.probe();

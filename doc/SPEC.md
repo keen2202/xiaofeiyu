@@ -1,9 +1,10 @@
 # dsh-bili-unified 技术规范（Spec）
 
-- 状态：**架构方向已确认；0.2.1-draft 已在本工作区实现（离线验证通过，2026-11-11 F01–F10 整改后 406 项回归通过）；真实环境验收未完成**
+- 状态：**架构方向已确认；0.2.1-draft 已在本工作区实现；2026-11-12 当前树回归 417 项、414 通过、0 失败、3 项环境跳过；完整真实环境验收未完成，现状见 TASKS §0**
 - 规范版本：0.2.1-draft
-- 日期：2026-11-06（最近修订：2026-11-11）
+- 日期：2026-11-06（最近修订：2026-11-12）
 - 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 完成文档一致性与可执行性修订；2026-11-06 按二次复核收尾测试分类、requestKey与交叉引用；2026-11-09 记录本工作区实现与 P1/P2 修复（离线测试 369 项、367 通过、0 失败、2 skip）；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项与覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），均不改变 GATE-0，也不代表真实外发/独立介质验收完成。
+- 2026-11-12 同步：命令入口当前授权、IM 待重验绑定、通知抑制及仅 IM 迁移重验已整改；证据见 `report/AUTHORITY_FOLLOWUP_2026-11-12.md`，保留此前各轮验收的版本范围。
 - 设计依据：`DESIGN.md`
 - 实施拆解：`TASKS.md`（0.2.1-draft；新增灾备条款、账本 v3、FR-DR-001～010 与 T20～T22 已同步到任务表）
 
@@ -1148,6 +1149,8 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 
 - `FR-IM-002`：幂等键为 adapterId＋botAccountId＋conversationId＋eventId，另保存命令hash和原taskId。无可靠eventId的通道只能受限只读；消息编辑不修改已接收任务，同键异内容拒绝。
 - 已登记重复消息核验当前访问权后返回原结果，不重新执行；新消息须校验可信发生时间，超过maxMessageAgeSec或异常未来时间拒绝。索引保留至少覆盖通道重投窗口和允许时间窗，未决任务索引不清理；迁移完整携带有效索引。
+- CommandService 在接收、等待请求锁后、预留事务内及调用业务模块前，均从当前账本重新解析主体/绑定并校验动作权限；请求结果重放也必须先通过当前授权。调用方提供的较小 scopes 仍作为权限上限，不能被账本 owner 的 `*` 扩大。任务列表/详情直接调用同样重新核验；IM 动作白名单先于 owner 管理捷径判断。
+- IM 入站及重投必须同时满足主体、绑定未撤销且均不要求重新核验；受信桥接解析的 adapterId/botAccountId/senderRef/conversationId 随命令复核。迁移旧绑定不得遮蔽同一发送者后来创建的有效新绑定。待重新核验的本地 owner 保留诊断与重绑管理入口，普通业务命令不得沿用导入权限，敏感管理仍须原人类证明与迁移/恢复门禁。
 - `FR-IM-003`：可执行动作白名单为评论草稿/干跑、生产草稿/干跑、本人任务查询、取消请求及受信人类审批。未经明确结构化确认的自然语言不得直接go；本期IM不能任意发送B站私信或创建已批准发布。
 - Approval={id,taskId,action,inputHash,taskRevision,principalId,nonceHash,expiresAt,decision,decidedAt,source}。只绑定一次批准对象；配置、权限、费用及输入变化均重新预检，修改输入必失效旧审批。
 - `FR-IM-004`：对同一审批同决定幂等，冲突决定拒绝；干跑不消费真实执行批准。批准过期、输入变更、主体撤权、迁机后的旧挑战一律拒绝；保留审计，不让Agent补写approved:true。
@@ -1158,6 +1161,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - `FR-IM-005`：任务事件与 outbox 在同一事务提交。Notification至少含 notificationId、taskId、taskRevision、bindingId、conversationId、summary、status；status为pending/sending/sent/failed/unknown/suppressed。
 - 发送前重新验证binding、受众权限、独立通知预算及匹配RecoveryHold，限流后在事务中写sending。明确未发送可有限重试；超时未知只有通道保证同notificationId幂等或可查询确定结果时才可恢复，否则unknown不自动重发。ChannelAdapter 的 `queryDelivery(notificationId,receipt)` 只能返回 sent/not_sent/unknown，能力不支持、超时或响应不可信均保持unknown；本地人类可用 `outbox resolve` 根据受控证据登记confirmed/not_sent，通知失败绝不触发任务重跑。
 - 进度通知可合并尚未发送的较旧revision，终态和人工待办保留；通道关闭时保留待办，撤权则suppressed。入站accepted响应是桥接处理回执，用户可见IM回信仍走outbox。
+- 通知入队与派发都检查绑定及其主体的撤销/待重验标记、workspace 和会话；派发另核对记录中的 adapterId/botAccountId，不能把旧通知转发到后来替换的身份。尚未派发且授权失效时记 suppressed 及原因，发送次数保持不变。任务提交观察器跳过无效受众，不能因状态回信被禁止而回滚业务提交；sending/unknown 仍按原送达核查规则处理。
 - outbox独立结算，不使已成功业务Task重新失败；pending/sending/unknown及仅有失败但未经核查的通知不得按留存期删除，其必需的Task归属/权限引用不得被普通Task清理删去。已sent/not_sent且超过通道重投窗口的记录可清理正文，但必须保留notificationId、Task/事件/回执摘要引用；迁移完整携带所有未决项与审计引用。
 - `FR-IM-006`：群聊只发summary或不发，不带完整脚本、私人日记、绝对路径、凭据或未经授权附件。首版产物回信仅含artifactId和摘要；不自行搭建公开下载链接服务。
 - `FR-IM-007`：dsh-im只有在已验证宿主消息来源、发送方式、事件ID、生命周期及人类证明后启用相应能力。未验证时报告unavailable/BLOCKED，不另接未经授权的QQ微信SDK。
@@ -1267,7 +1271,7 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 - platform:bilibili：目标显式 account verify、当前凭据修订匹配、再次只读 whoami 得到相同稳定账号。
 - production:local：功能和本地执行开关、受信 profile 与工具绝对路径、ffmpeg/ffprobe 版本预检通过。
 - publish:manual：发布开启、目标账号核验；publish:external 另核对允许执行开关、successJson、绑定的普通可执行文件，不试发或自动执行发布器。
-- im：已绑定通道只读 probe 为 available，存在重新核验且未撤销的受众绑定；不发送探测消息。
+- im：已绑定通道只读 probe 为 available，存在重新核验且未撤销的受众绑定，其主体也必须有效；不发送探测消息。当前本地 owner 已提供本次请求的新鲜人类证明时，仅在能力检查副本中视该 owner 为已核验，全部检查与授予提交成功后才持久化；其他主体及所有旧绑定仍须独立重验。支持仅申请 im 的目标，不要求先授予无关平台能力。
 - 任一请求能力失败则整体拒绝。准备/提交绑定配置、账号、主体、受众修订及目标新鲜保护点；跨 state/instance 提交中断保持 prepared 禁派发，必须显式重新核验，不能继承上次未提交的授予。
 - 不清除恢复 hold，不自动运行旧 Task/outbox；本地 owner 可在新证明后恢复自身主体，受限内置调度主体重新绑定，其他导入主体/IM 绑定仍逐项重验。旧待审批评论/生产 Task 经显式 release-hold、resume 重新签发挑战；旧挑战不能复用。
 
@@ -1389,5 +1393,5 @@ ApprovalService.decide({approvalId, decision, nonce, mode}, trustedHumanContext)
 
 - `FR-DR-010`：必须完成§19.5的故障注入矩阵，分别证明数据能恢复和副作用不会被误重放；记录实际恢复点年龄、只读恢复耗时、缺媒体范围和未解冻scope。仅backup create/verify成功不等于恢复演练通过。
 - 新增本地模块目标为backup-recovery.js，复用Store/Artifact/事件归档与主体权限，不新建分布式服务。以下每个入口都必须在预留和实际派发边界接入健康恢复点及RecoveryHold检查：§7.2平台写、§15.4 Manual人工补录、§15.5 External发布、§22.3通知/outbox、§24付费Provider；§24本地免费阶段与§25迁移prepare/activate还须检查迁移/恢复冻结。§6/§10只负责状态与hold约束，不能替代派发网关；同机HTTP/CLI/IM/scheduler入口不能保留绕过路径。
-- 契约与验收已写入DESIGN/SPEC，TASKS已同步T20～T22、新增10条FR-DR及账本v3的任务映射。2026-11-09 本工作区已按本规范完成离线实现与 P1/P2 修复：§27.8 所列派发入口均接入健康恢复点与 RecoveryHold 检查，备份索引使用跨进程文件锁+CAS，灾备解冻前置与区间闭合已实现（离线测试通过，详见 `report/P1_P2_FIX_REPORT_2026-11-09.md`）。真实独立故障域、物理介质、RPO/RTO 演练与跨 OS 验收仍未实测，不得以离线测试替代。
+- 契约与验收已写入DESIGN/SPEC，TASKS已同步T20～T22、新增10条FR-DR及账本v3的任务映射。2026-11-09 本工作区已按本规范完成离线实现与 P1/P2 修复：§27.8 所列派发入口均接入健康恢复点与 RecoveryHold 检查，备份索引使用跨进程文件锁+CAS，灾备解冻前置与区间闭合已实现（离线测试通过，详见 `report/P1_P2_FIX_REPORT_2026-11-09.md`）。后续已完成合成数据双向跨 OS 迁移、一次小样本 full 只读恢复及 owner 核验的远程独立账本保护点；持续 RPO/RTO、真实介质故障和生产账本迁移仍未验收。分项证据与限制见 TASKS §0，不得以离线或单次样本替代完整验收。
 

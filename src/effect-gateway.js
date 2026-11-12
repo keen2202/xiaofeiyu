@@ -13,7 +13,7 @@ import {
   scopeKeyFor
 } from './contracts.js';
 import { computeConfigHash } from './config.js';
-import { assertTaskAuthority } from './identity.js';
+import { assertTaskAuthority, imBindingFailure } from './identity.js';
 import {
   deepClone,
   formatDateInZone,
@@ -1696,7 +1696,7 @@ export class EffectGateway {
       throw new AppError('INPUT_REQUIRED', 'notification binding/conversation/summary are required');
     }
     const binding = tx.state.bindings[data.bindingId];
-    if (!binding || binding.revokedAt) throw new AppError('FORBIDDEN', 'notification binding is inactive');
+    if (imBindingFailure(tx.state, binding, data)) throw new AppError('FORBIDDEN', 'notification authority is inactive');
     if (!binding.conversationIds.includes(data.conversationId)) {
       throw new AppError('FORBIDDEN', 'notification conversation is not authorized');
     }
@@ -1777,15 +1777,16 @@ export class EffectGateway {
         throw new AppError('OPERATION_UNKNOWN', 'notification is already sending/unknown');
       }
       const binding = draft.bindings[notification.bindingId];
-      if (!binding || binding.revokedAt) {
+      const authorityFailure = imBindingFailure(draft, binding, notification);
+      if (authorityFailure) {
         notification.status = 'suppressed';
-        notification.suppressionReason = 'binding_revoked';
+        notification.suppressionReason = authorityFailure;
         notification.finishedAt = nowIso(this.now);
         tx.appendEvent({
           type: 'outbox.suppressed',
           actor: 'system',
           taskId: notification.taskId,
-          payload: { notificationId, reason: 'binding_revoked' }
+          payload: { notificationId, reason: authorityFailure }
         });
         return { terminal: true, notification: deepClone(notification) };
       }

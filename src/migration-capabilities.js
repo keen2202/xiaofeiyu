@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { AppError } from './errors.js';
+import { imBindingFailure } from './identity.js';
 
 // Invoked only by explicit local capability reauthorization, never by startup/status.
 export function migrationCapabilityChecks({ configService, credentials, adapter, channel }) {
@@ -42,9 +43,8 @@ export function migrationCapabilityChecks({ configService, credentials, adapter,
           if (!config.im.enabled || !channel) throw new AppError('DEPENDENCY_UNAVAILABLE', 'IM channel is not rebound');
           const probe = await channel.probe();
           if (probe.status !== 'available') throw new AppError('DEPENDENCY_UNAVAILABLE', 'IM channel is unavailable');
-          const bindings = Object.values(state.bindings).filter(binding => !binding.revokedAt && !binding.requiresReverification &&
-            binding.adapterId === config.im.adapterId && binding.conversationIds.length > 0 &&
-            state.principals[binding.principalId] && !state.principals[binding.principalId].revokedAt);
+          const bindings = Object.values(state.bindings).filter(binding => !imBindingFailure(state, binding) &&
+            binding.adapterId === config.im.adapterId && binding.conversationIds.length > 0);
           if (!bindings.length) throw new AppError('FORBIDDEN', 'no reverified IM audience binding');
         } else if (!capabilities.includes(capability)) {
           throw new AppError('CAPABILITY_UNSUPPORTED', 'capability has no local re-verification procedure');

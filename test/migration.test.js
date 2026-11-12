@@ -10,6 +10,7 @@ import { CommentsModule } from '../src/modules/comments.js';
 import { jcsHash } from '../src/utils.js';
 import { NAV_WBI, responseJson } from './helpers/mock-fetch.js';
 import { MigrationService, verifyMigrationPackage } from '../src/migration.js';
+import { migrationCapabilityChecks } from '../src/migration-capabilities.js';
 import { DiaryModule } from '../src/modules/diary.js';
 import { nowIso } from '../src/utils.js';
 
@@ -225,6 +226,38 @@ test('audit: target runtime and CLI reauthorize verified capabilities, retain ho
     assert.equal(resumed.status, 'waiting_approval');
     assert.notEqual(resumed.input.approvalId, flow.comment.approval.id);
     assert.equal((await flow.source.harness.store.getInstance()).status, 'retired');
+  } finally { await runtime?.close(); await flow.source.harness.cleanup(); await fs.rm(flow.targetDir, { recursive: true, force: true }); }
+});
+
+test('IM-only target reauthorization uses fresh owner proof but cannot revive an imported binding', async () => {
+  const flow = await fullFlow();
+  let runtime;
+  try {
+    runtime = await createRuntime({ dataDir: flow.targetDir, now: flow.source.harness.now,
+      env: {}, humanVerifier: flow.source.harness.verifier, logger: { warn() {}, info() {} } });
+    runtime.migration.protection = flow.source.harness.protectionProvider;
+    await runtime.configService.update({ im: { enabled: true } }, { source: 'cli' });
+    runtime.migration.activationChecks = migrationCapabilityChecks({ configService: runtime.configService,
+      channel: { async probe() { return { status: 'available' }; } } });
+    const context = flow.source.harness.humanContext;
+    const bindingData = { adapterId: 'dsh-im', botAccountId: 'bot', senderRef: 'owner',
+      conversationIds: ['conv'], principalId: context.principal.id, scopes: ['task.read.own'] };
+    await runtime.store.transaction(async (state, tx) => {
+      runtime.identity.bindIm(tx, { ...bindingData, bindingId: 'old-binding' });
+      state.bindings['old-binding'].requiresReverification = true;
+    });
+    const input = { migrationId: flow.released.migration.id, capabilities: ['im'] };
+    await assert.rejects(runtime.migration.reauthorize(input, context), { code: 'MIGRATION_BLOCKED' });
+    assert.equal((await runtime.store.getSnapshot()).principals[context.principal.id].requiresReverification, true);
+    await runtime.store.transaction(async (state, tx) => runtime.identity.bindIm(tx, { ...bindingData, bindingId: 'new-binding' }));
+    assert.equal((await runtime.migration.reauthorize(input, context)).authorized, true);
+    const state = await runtime.store.getSnapshot();
+    assert.equal(state.bindings['old-binding'].requiresReverification, true);
+    assert.equal(state.principals[context.principal.id].requiresReverification, false);
+    const resolved = await runtime.store.transaction(async (draft, tx) => runtime.identity.resolveImPrincipal(tx, {
+      adapterId: 'dsh-im', botAccountId: 'bot', senderRef: 'owner', conversationId: 'conv'
+    }));
+    assert.equal(resolved.binding.bindingId, 'new-binding');
   } finally { await runtime?.close(); await flow.source.harness.cleanup(); await fs.rm(flow.targetDir, { recursive: true, force: true }); }
 });
 

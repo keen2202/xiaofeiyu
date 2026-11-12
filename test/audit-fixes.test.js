@@ -224,6 +224,23 @@ test('audit: staged config recovery preserves host restrictions and does not per
   } finally { await h.cleanup(); }
 });
 
+test('audit: IM capability requires both a reverified binding and an available principal', async () => {
+  const h = await createHarness({ overrides: { im: { enabled: true } } });
+  try {
+    await h.store.transaction(async (state, tx) => {
+      h.identity.bindIm(tx, { adapterId: 'dsh-im', botAccountId: 'bot', senderRef: 'sender',
+        conversationIds: ['conv'], principalId: h.owner.id, scopes: ['task.read.own'] });
+      state.principals[h.owner.id].requiresReverification = true;
+    });
+    const checks = migrationCapabilityChecks({ configService: h.configService, channel: { async probe() { return { status: 'available' }; } } });
+    const result = await checks({ state: await h.snapshot(), requestedCapabilities: ['im'] });
+    assert.equal(result.capabilities.includes('im'), false);
+    assert.equal(result.blocked[0].code, 'FORBIDDEN');
+    await h.store.transaction(async state => { state.principals[h.owner.id].requiresReverification = false; });
+    assert.equal((await checks({ state: await h.snapshot(), requestedCapabilities: ['im'] })).capabilities.includes('im'), true);
+  } finally { await h.cleanup(); }
+});
+
 test('audit: runtime capability verification rejects unbound dependencies and mismatched accounts without grants', async () => {
   const h = await createHarness({ overrides: { publishing: { enabled: true } } });
   try {

@@ -23,7 +23,7 @@
 | 迁移/恢复 | migration.phase=`active`，recovery.phase=`normal`，holds=0 |
 | 账号 | bilibili `3546827282450731`（白阑王）；credentials 已绑定 |
 | 备份保护 | 远程独立故障域，已有 protected ledger 点（下次执行前须新建新鲜点） |
-| 目标主机 | `VM-0-5-ubuntu`，Linux 6.8，Ubuntu 24.04；`/dev/vda2` 59G，已用 92%，可用约 4.8G；**未安装 Node**；apt/sudo 可用 |
+| 目标主机 | `VM-0-5-ubuntu`，Linux 6.8，Ubuntu 24.04；`/dev/vda2` 59G，已用 92%，可用约 4.8G（均为该次测量）。root 已有 Node v24.14.0（`/root/.nvm/versions/node/v24.14.0/bin/node`）及 ffmpeg/ffprobe，已按用户要求通过 `sudo -i` 完成隔离验收；普通 ubuntu PATH 未暴露它，不代表主机未安装 Node |
 | 目标数据/包空间需求 | 包 ≈ 428KB × 1.1 + 16MB ≈ 17MB；目标 `/home/ubuntu` 空间充足 |
 
 ## 2. 迁移语义（代码事实，便于审核）
@@ -58,7 +58,7 @@
    - 记录基线：`git rev-parse HEAD`、`node --version`、`node cli.mjs status`、`node cli.mjs migration status` 输出存档。
    - **文件系统级保险副本**（不是迁移包，不必走 TTY）：把整个数据目录复制到 `D:\dsh-migration-<ts>\source-data-backup`，并记录 `robocopy`/`sha256` 清单；此副本只作灾难兜底，不能替代受保护恢复点。
 2. Linux 侧：
-   - 安装 Node 22 LTS（官方 tarball + `SHASUMS256.txt` 校验），安装到 `/opt/node-v22.x-linux-x64`，记录 `node -v`。
+   - 先在拟使用的运行账号下核验 Node 22+。root 已有 v24.14.0；本次隔离验收目录另有校验过的 Node v22.23.4。仅当生产运行账号确实缺少可用运行时时，才另准备官方 tarball 并校验 `SHASUMS256.txt`，记录真实绝对路径与 `node -v`；下文 `/opt/node-v22.x-linux-x64` 是待替换示例，不是现有安装事实。
    - 传输代码：Windows 执行 `git archive --format=tar --output D:\dsh-migration-<ts>\code.tar HEAD`，scp 到 Linux 后解压到 `/home/ubuntu/xiaofeiyu`；两端核对 `git` 不可用时直接比对 `src/index.js` 的 sha256 与 commit 记录。
    - 建目录：`/home/ubuntu/dsh-migration/transfer`、`/home/ubuntu/dsh-bili/data`（`data` 必须为空）。
 3. 记录计划使用的 target 标签（prepare 时使用，例：`instance_linux_target_20261111`）。

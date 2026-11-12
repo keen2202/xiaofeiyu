@@ -312,5 +312,25 @@
   "synchronizedAfterSourceArchive": {
     "src/identity.js": "7c995d932a3eedd63ecb17802141fc1482a8d0627a34f55bc8a14aa08b746006",
     "test/audit-fixes.test.js": "785e62f6c3734355c6becd6b33b65324109d3caaf14e031b5386a36c883d19ce"
+  },
+  "finalRegressionArchive": {
+    "archivedOn": "2026-11-12",
+    "scope": "F01-F10 source archive plus synchronizedAfterSourceArchive; includes final legacy-task authority hardening, excludes later 3bef4cd atomic-write retry changes",
+    "node24": {
+      "log": "priority-linux-node24-final-2026-11-11.txt",
+      "tests": 406,
+      "passed": 406,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 45823.64188
+    },
+    "node22": {
+      "log": "priority-linux-node22-final-2026-11-11.txt",
+      "tests": 406,
+      "passed": 406,
+      "failed": 0,
+      "skipped": 0,
+      "durationMs": 47528.759777
+    }
   }
 }
