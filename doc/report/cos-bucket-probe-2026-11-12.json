@@ -1,0 +1,48 @@
+{
+  "recordedAt": "2026-11-12T15:10:00Z",
+  "host": "VM-0-5-ubuntu",
+  "instanceId": "ins-24kr23mx",
+  "region": "ap-chengdu",
+  "bucket": "claw-cos-data-1407061106",
+  "bucketPrefix": "/claw2",
+  "mount": "/cos-backup",
+  "mountSource": "cosfs",
+  "mountOptions": "-ourl=http://cos-internal.ap-chengdu.myqcloud.com -opasswd_file=/etc/passwd-cosfs -omultipart_size=200 -oparallel_count=15 -odbglevel=err -oallow_other -oensure_diskfree=1024",
+  "cosfsVersion": "V1.0.21",
+  "service": {
+    "mountService": "cos-backup.service active (ExecStart /usr/local/bin/mount-cos-backup.sh, primary internal endpoint, public HTTPS fallback)",
+    "watchdog": "root crontab */10 * * * * /usr/local/bin/cos-backup-watchdog.sh",
+    "watchdogAction": "mountpoint/ls health check; umount -l and systemctl restart cos-backup on failure"
+  },
+  "credentialsFile": "/etc/passwd-cosfs mode 600 root:root (content not read)",
+  "existingUsage": {
+    "notes": "shared bucket; immich backup prefix mounted at /cos-backup/immich",
+    "immichPostgresBytes": 37748736,
+    "immichPostgresHuman": "36M",
+    "immichSubdirs": ["postgres", "pre-upgrade", "backups", "encoded-video", "library", "motion-tmp", "profile", "thumbs", "upload"],
+    "librarySize": "not measured (avoid full recursive listing of shared photo library)"
+  },
+  "probe": {
+    "script": ".dsh-probe/cos-bucket-probe.sh",
+    "writesOnlyHiddenProbePrefix": true,
+    "cleanedUp": true,
+    "leftoverProbeDirs": 0,
+    "listMs": 23,
+    "write70FilesMs": 11846,
+    "syncMs": 11,
+    "read70FilesMs": 2853,
+    "write20MiBMs": 872,
+    "flush20MiBMs": 13,
+    "read20MiBMs": 157,
+    "rename70FileDirMs": 9696,
+    "renameDirOk": true,
+    "atomicReplaceOk": true,
+    "digestMatchBeforeAfterRead": true,
+    "cleanupMs": 1417
+  },
+  "compatibilityNotes": [
+    "cosfs supports os.replace on files (atomicWriteFile path) and directory rename; directory rename is implemented as copy+delete at the client, so publishing a ~71-object backup point costs roughly one extra read+write+delete per object and ~10s wall time.",
+    "Directory rename is not atomic at the COS layer; a crash mid-publish can leave a partial final point. backup verify/recovery must remain the integrity gate (no claim of atomic publish).",
+    "Internal endpoint resolves to 169.254.0.47 and returns HTTP 400 in ~1.8ms for a bare GET; same-region CVM<->COS traffic is free per COS docs."
+  ]
+}
