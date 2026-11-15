@@ -1085,17 +1085,22 @@ export class MigrationService {
     };
   }
 
-  async status({ dataDir = this.dataDir } = {}) {
-    if (this.store) {
+  async status(options = {}) {
+    // An explicit data directory always reports that directory, so
+    // `migration status --data-dir <target>` never silently labels the local
+    // ledger as "source". Without the flag the local runtime store is used.
+    const explicit = options?.dataDir ? path.resolve(options.dataDir) : null;
+    if (this.store && !explicit) {
       const state = await this.store.getSnapshot();
       return {
         source: deepClone(state.migration),
         target: null
       };
     }
-    if (dataDir && (await pathExists(path.join(dataDir, 'state.json')))) {
-      const state = await readJson(path.join(dataDir, 'state.json'));
-      const instance = await readJson(path.join(dataDir, 'instance.json'));
+    const requested = explicit || (this.dataDir ? path.resolve(this.dataDir) : null);
+    if (requested && (await pathExists(path.join(requested, 'state.json')))) {
+      const state = await readJson(path.join(requested, 'state.json'));
+      const instance = await readJson(path.join(requested, 'instance.json'));
       return { source: null, target: { migration: state.migration, instance: { instanceId: instance.instanceId, status: instance.status } } };
     }
     return { source: null, target: null };

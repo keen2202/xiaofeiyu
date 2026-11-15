@@ -647,6 +647,51 @@ test('import normalizes a settled failed task so the target ledger stays loadabl
   }
 });
 
+test('migration status reports the target ledger when --data-dir is explicit', async () => {
+  const source = await setupSource();
+  const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-status-target-'));
+  await fs.rm(targetDir, { recursive: true, force: true });
+  let targetRuntime = null;
+  try {
+    const prepared = await source.migration.prepare(
+      { targetInstanceId: 'target_status' },
+      source.harness.humanContext
+    );
+    const exported = await source.migration.export(
+      { migrationId: prepared.migration.id },
+      source.harness.humanContext
+    );
+    const importer = new MigrationService({
+      humanProof: source.harness.humanProof,
+      now: source.harness.now
+    });
+    await importer.importPackage(
+      { from: exported.packageDir, dataDir: targetDir },
+      source.harness.humanContext
+    );
+    targetRuntime = await createRuntime({
+      dataDir: targetDir,
+      now: source.harness.now,
+      env: {},
+      logger: { warn() {}, info() {} }
+    });
+    const explicit = await targetRuntime.migration.status({ dataDir: targetDir });
+    assert.equal(explicit.source, null);
+    assert.equal(explicit.target.migration.phase, 'imported');
+    assert.equal(explicit.target.migration.id, prepared.migration.id);
+    assert.equal(explicit.target.migration.snapshotHash, exported.snapshotHash);
+    assert.ok(explicit.target.instance.instanceId.startsWith('instance_'));
+    const local = await targetRuntime.migration.status();
+    assert.equal(local.target, null);
+    assert.equal(local.source.phase, 'imported');
+    assert.equal(local.source.id, prepared.migration.id);
+  } finally {
+    await targetRuntime?.close();
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await source.harness.cleanup();
+  }
+});
+
 test('disable-target requires a reachable target and rollback performs a reverse import/activate', async () => {
   const flow = await fullFlow();
   let rollbackDir = null;

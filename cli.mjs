@@ -828,7 +828,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       const migrationId = command[2];
       if (sub === 'status') {
         if (!runtime.migration) throw waitingFor('MigrationService');
-        print(stdout, await runtime.migration.status());
+        print(stdout, await runtime.migration.status({
+          dataDir: flags['data-dir'] ? path.resolve(flags['data-dir']) : undefined
+        }));
         return 0;
       }
       if (sub === 'release-hold') {
