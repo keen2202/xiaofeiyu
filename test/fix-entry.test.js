@@ -611,6 +611,75 @@ test('CLI enforces --confirm and rejects --go as a migration import confirmation
   }
 });
 
+test('CLI migration prepare does not require --data-dir and never leaks a path TypeError', async () => {
+  const calls = [];
+  const fake = makeFakeRuntime({
+    extra: {
+      migration: {
+        async prepare(payload, context) {
+          calls.push({ payload, principalId: context?.principal?.id });
+          return {
+            migration: { id: 'migration_fake', phase: 'quiescing', targetInstanceId: payload.targetInstanceId },
+            sealed: false
+          };
+        }
+      }
+    }
+  });
+  const result = await runCli(['migration', 'prepare', '--target', 'instance_2', '--confirm'], { fake });
+  assert.equal(result.code, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.targetInstanceId, 'instance_2');
+  assert.equal(calls[0].payload.executorStopEvidence, null);
+  assert.equal(calls[0].principalId, 'local_owner');
+  assert.equal(JSON.parse(result.stdout).migration.phase, 'quiescing');
+  assert.match(result.proof, /Target instance: "instance_2"/);
+
+  // A subcommand that truly owns the flag must fail with usage, not DEPENDENCY_UNAVAILABLE.
+  await assert.rejects(
+    () => runCli(['migration', 'validate', 'migration_1'], { fake }),
+    (error) =>
+      error.code === 'CONFIG_INVALID' &&
+      /migration validate requires --data-dir/.test(error.message)
+  );
+});
+
+test('CLI required-flag guards return usage errors instead of path/JSON TypeErrors', async () => {
+  const fake = makeFakeRuntime();
+
+  // Standalone entries fail before any runtime is created.
+  await assert.rejects(
+    () => runCli(['migration', 'import', '--confirm'], {}),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --from/.test(error.message)
+  );
+  await assert.rejects(
+    () => runCli(['migration', 'import', '--from', '.', '--confirm'], {}),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --data-dir/.test(error.message)
+  );
+  await assert.rejects(
+    () => runCli(['recovery', 'restore', '--confirm'], {}),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --from/.test(error.message)
+  );
+  await assert.rejects(
+    () => runCli(['recovery', 'restore', '--from', '.', '--confirm'], {}),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --to/.test(error.message)
+  );
+
+  // Runtime entries reject the missing flag before the human challenge is issued.
+  await assert.rejects(
+    () => runCli(['artifact', 'import', '--confirm'], { fake }),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --file/.test(error.message)
+  );
+  await assert.rejects(
+    () => runCli(['recovery', 'authorize', '--confirm'], { fake }),
+    (error) => error.code === 'CONFIG_INVALID' && /requires --scope/.test(error.message)
+  );
+  await assert.rejects(
+    () => runCli(['recovery', 'authorize', '--scope', '{not json', '--confirm'], { fake }),
+    (error) => error.code === 'CONFIG_INVALID' && /must be valid JSON/.test(error.message)
+  );
+});
+
 test('CLI approval go path dispatches approval.decide with trusted human context', async () => {
   const approval = {
     id: 'approval_1',

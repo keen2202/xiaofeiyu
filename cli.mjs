@@ -61,6 +61,20 @@ function requireConfirm(flags, action) {
   if (flags.confirm !== true) throw new CliUsageError(`${action} requires --confirm`);
 }
 
+// A missing required flag must fail as a usage error. Feeding `undefined` into
+// path.resolve()/JSON.parse() throws a raw TypeError that the top-level handler
+// misreports as DEPENDENCY_UNAVAILABLE, hiding the real cause.
+function requireFlag(flags, name, usage, { alias = null } = {}) {
+  let value = flags[name];
+  if ((value === undefined || value === true || value === '') && alias) value = flags[alias];
+  if (value === undefined || value === true || value === '') throw new CliUsageError(usage);
+  return String(value);
+}
+
+function requireFlagPath(flags, name, usage, options = {}) {
+  return path.resolve(requireFlag(flags, name, usage, options));
+}
+
 async function readJsonArg(file) {
   if (!file || file === true) throw new CliUsageError('--file or --job is required');
   try {
@@ -395,10 +409,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
   if (command[0] === 'migration' && command[1] === 'import') {
     requireConfirm(flags, 'migration import');
+    const from = requireFlagPath(flags, 'from', 'migration import requires --from <package-dir>');
+    const dataDir = requireFlagPath(flags, 'data-dir', 'migration import requires --data-dir <dir> (or --to)', {
+      alias: 'to'
+    });
     const verifier = io.humanVerifier || new TtyHumanVerifier();
     const proofService = new HumanProofService({ verifier });
-    const from = path.resolve(flags.from);
-    const dataDir = path.resolve(flags['data-dir'] || flags.to);
     const binding = { action: 'migration.import', from, dataDir };
     const principal = syntheticLocalOwner();
     const proof = await promptProofWithVerifier(verifier, binding, io);
@@ -409,10 +425,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
   }
   if (command[0] === 'recovery' && command[1] === 'restore') {
     requireConfirm(flags, 'recovery restore');
+    const from = requireFlagPath(flags, 'from', 'recovery restore requires --from <package-dir>');
+    const to = requireFlagPath(flags, 'to', 'recovery restore requires --to <empty-dir>');
     const verifier = io.humanVerifier || new TtyHumanVerifier();
     const proofService = new HumanProofService({ verifier });
-    const from = path.resolve(flags.from);
-    const to = path.resolve(flags.to);
     const requestId = flags.request || `cli-${Date.now()}`;
     const binding = { action: 'recovery.restore', requestId, from, to };
     const principal = syntheticLocalOwner();
@@ -633,10 +649,11 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     }
     if (command[0] === 'artifact' && command[1] === 'import') {
       requireConfirm(flags, 'artifact import');
-      const role = flags.role;
-      const context = await humanContext(runtime, { action: 'artifact.import', file: flags.file, role }, { verifyNow: true, io });
+      const file = requireFlag(flags, 'file', 'artifact import requires --file <path> and --role <role>');
+      const role = requireFlag(flags, 'role', 'artifact import requires --file <path> and --role <role>');
+      const context = await humanContext(runtime, { action: 'artifact.import', file, role }, { verifyNow: true, io });
       print(stdout, await runtime.artifactStore.importFile({
-        sourcePath: path.resolve(flags.file),
+        sourcePath: path.resolve(file),
         role,
         principal: context.principal
       }));
@@ -843,12 +860,17 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       const CONFIRMED_SUBS = new Set(['prepare', 'release', 'activate', 'abort', 'disable-target', 'rollback']);
       if (CONFIRMED_SUBS.has(sub)) requireConfirm(flags, `migration ${sub}`);
       if (!runtime.migration) throw waitingFor('MigrationService');
+      // Each subcommand must only resolve the flags it actually owns: building
+      // every payload eagerly used to crash `prepare` (and the rest) on a
+      // missing --data-dir/--from before the real operation ever ran.
+      const resolveRequiredDir = (name, label) =>
+        requireFlagPath(flags, name, `migration ${label} requires --${name} <dir>`);
       const activateReceipt = sub === 'activate' ? await readJsonArg(flags.receipt) : null;
       const preparePayload = { targetInstanceId: flags.target, executorStopEvidence: flags['executor-stop-evidence'] || null };
       const activatePayload = {
         migrationId,
         receipt: activateReceipt,
-        dataDir: path.resolve(flags['data-dir']),
+        dataDir: sub === 'activate' ? resolveRequiredDir('data-dir', 'activate') : null,
         sourceStopped: flags['source-stopped'] === true
       };
       const disablePayload = {
@@ -862,10 +884,12 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         targetDataDir: flags['target-data-dir'] || null,
         to: flags.to || null
       };
-      const importPayload = {
-        from: path.resolve(flags.from),
-        dataDir: path.resolve(flags['data-dir'] || flags.to)
-      };
+      const importPayload = sub === 'import'
+        ? {
+            from: resolveRequiredDir('from', 'import'),
+            dataDir: resolveRequiredDir('data-dir', 'import')
+          }
+        : { from: null, dataDir: null };
       const bindingBySub = {
         prepare: { action: 'migration.prepare', targetInstanceId: preparePayload.targetInstanceId },
         export: { action: 'migration.export', migrationId },
@@ -893,7 +917,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       } else if (sub === 'import') {
         print(stdout, await runtime.migration.importPackage(importPayload, context));
       } else if (sub === 'validate') {
-        print(stdout, await runtime.migration.validate({ migrationId, dataDir: path.resolve(flags['data-dir']) }, context));
+        print(stdout, await runtime.migration.validate(
+          { migrationId, dataDir: resolveRequiredDir('data-dir', 'validate') },
+          context
+        ));
       } else if (sub === 'activate') {
         print(stdout, await runtime.migration.activate(activatePayload, context));
       } else if (sub === 'abort') {
@@ -991,7 +1018,13 @@ export async function main(argv = process.argv.slice(2), io = {}) {
       }
       if (sub === 'authorize') {
         requireConfirm(flags, 'recovery authorize');
-        const scope = JSON.parse(flags.scope);
+        const rawScope = requireFlag(flags, 'scope', 'recovery authorize requires --scope <json>');
+        let scope;
+        try {
+          scope = JSON.parse(rawScope);
+        } catch {
+          throw new CliUsageError('recovery authorize --scope must be valid JSON');
+        }
         const recoveryId = flags.id || command[2] || null;
         const context = await humanContext(runtime, {
           action: 'recovery.authorize',
