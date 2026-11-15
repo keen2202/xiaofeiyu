@@ -26,6 +26,7 @@ import {
   resolveInside,
   sha256Hex
 } from './utils.js';
+import { validateInstance, validateState } from './store.js';
 
 export const MIGRATION_SCHEMA_VERSION = 1;
 export const MIGRATION_STATE_VERSION = 3;
@@ -811,7 +812,11 @@ export class MigrationService {
         const existingHoldIndex = task.holds.findIndex((hold) => hold.id === migrationHold.id);
         if (existingHoldIndex >= 0) task.holds[existingHoldIndex] = migrationHold;
         else task.holds.push(migrationHold);
+        // An active hold makes the task unsettled; the ledger invariant then
+        // requires finishedAt=null (task-manager recompute does the same), so a
+        // settled failed/partial task must not keep its old finish time.
         task.isSettled = false;
+        task.finishedAt = null;
       }
       for (const notification of Object.values(targetState.outbox || {})) {
         if (['pending', 'sending'].includes(notification.status)) {
@@ -840,6 +845,10 @@ export class MigrationService {
         migrationId: manifest.migrationId,
         intendedTargetInstanceId: manifest.targetInstanceId
       };
+      // Fail closed before copying any bytes: import must never produce a data
+      // directory that the store itself would refuse to load.
+      validateState(targetState);
+      validateInstance(instance);
       for (const file of manifest.files) {
         if (!isSafeRelativePath(file.path)) throw new AppError('MIGRATION_BLOCKED', 'unsafe package path');
         if (file.role === 'state') continue;

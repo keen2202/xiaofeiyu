@@ -589,6 +589,64 @@ test('export --out stages beside the target so cross-volume out dirs avoid EXDEV
   }
 });
 
+test('import normalizes a settled failed task so the target ledger stays loadable', async () => {
+  const source = await setupSource();
+  const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-failed-task-target-'));
+  await fs.rm(targetDir, { recursive: true, force: true });
+  let targetRuntime = null;
+  try {
+    const failed = await source.harness.store.transaction(async (draft, tx) => {
+      const task = source.harness.taskManager.create(tx, {
+        kind: 'dm',
+        principalId: source.harness.owner.id,
+        accountRef: { platform: 'bilibili', accountId: '1001' },
+        inputHash: 'jcs-sha256-v1:' + '7'.repeat(64),
+        input: { text: 'rate limited before migration' }
+      });
+      source.harness.taskManager.transition(tx, task, 'running', { actor: 'system' });
+      source.harness.taskManager.transition(tx, task, 'failed', { actor: 'system', reason: 'rate limited' });
+      return task;
+    });
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.isSettled, true);
+    assert.ok(failed.finishedAt);
+    const prepared = await source.migration.prepare(
+      { targetInstanceId: 'target_failed_task' },
+      source.harness.humanContext
+    );
+    const exported = await source.migration.export(
+      { migrationId: prepared.migration.id },
+      source.harness.humanContext
+    );
+    const importer = new MigrationService({
+      humanProof: source.harness.humanProof,
+      now: source.harness.now
+    });
+    const imported = await importer.importPackage(
+      { from: exported.packageDir, dataDir: targetDir },
+      source.harness.humanContext
+    );
+    assert.equal(imported.phase, 'imported');
+    // The imported ledger must pass the store's own schema checks: a migration
+    // hold makes the task unsettled, which also requires finishedAt=null.
+    targetRuntime = await createRuntime({
+      dataDir: targetDir,
+      now: source.harness.now,
+      env: {},
+      logger: { warn() {}, info() {} }
+    });
+    const migrated = (await targetRuntime.store.getSnapshot()).tasks[failed.id];
+    assert.equal(migrated.status, 'failed');
+    assert.equal(migrated.isSettled, false);
+    assert.equal(migrated.finishedAt, null);
+    assert.ok(migrated.holds.some((hold) => hold.kind === 'migration' && hold.status === 'active'));
+  } finally {
+    await targetRuntime?.close();
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await source.harness.cleanup();
+  }
+});
+
 test('disable-target requires a reachable target and rollback performs a reverse import/activate', async () => {
   const flow = await fullFlow();
   let rollbackDir = null;
