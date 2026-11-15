@@ -16,6 +16,8 @@
 | 目标磁盘 | `/` 59G，已用 40G，可用 17G |
 | 生产数据 | 未触碰；WSH 备份挂载需在执行窗口重新确认（见步骤 1） |
 
+> **2026-11-15 修复**：`cli.mjs` 迁移子命令曾无条件解析 `--data-dir`/`--from`，导致 `migration prepare`（以及 `export`/`release`/`abort`/`disable-target`/`rollback`）在 `path.resolve(undefined)` 崩溃并误报 `DEPENDENCY_UNAVAILABLE`；已在 `cli.mjs` 修复并有回归测试。`src/migration.js` 另修两处：① `migration export --out` 原先把暂存目录建在数据目录所在卷，跨盘（C: 数据目录 → D: 输出）时 `rename` 报 `EXDEV`，现在暂存目录建在输出目录旁边；② `migration import` 为未终态任务加 migration hold 时只把 `isSettled` 置 false 却保留 `finishedAt`，使已结算的 `failed` 任务在目标端触发 `STORE_CORRUPTED: invalid task field combination`，现在同时清空 `finishedAt`（与 `TaskManager` 重算语义一致），并在写入前用 `validateState`/`validateInstance` 失败即停。以上只影响本机 CLI/导出暂存/导入归一化，未改迁移包格式与摘要。因此上表 `cli.mjs` 的 sha256 与 `code.tar` 记录已过期：执行前请把修复后的 `cli.mjs` 与 `src/migration.js` 重新 `scp` 到 `/home/ubuntu/xiaofeiyu/`，或在 evidence 中记录差异。
+
 ## 1. Windows 侧（关 DSH 后，真实 PowerShell 窗口）
 
 ```powershell
@@ -43,9 +45,10 @@ node cli.mjs migration export <migrationId> --out D:\dsh-migration-20261112\pack
 # 期望：phase=sealed；记录 snapshotHash、cutEventSeq、files、totalBytes
 
 # 1.5 先传输（abort 会删 Windows 侧包目录），再 abort（第 4 次挑战）
-scp -r D:\dsh-migration-20261112\package ubuntu@42.193.20.17:/home/ubuntu/dsh-migration/transfer/
+scp -i C:\Users\22338\.ssh\win1.pem -r D:\dsh-migration-20261112\package ubuntu@42.193.20.17:/home/ubuntu/dsh-migration/transfer/
 Get-FileHash D:\dsh-migration-20261112\package\manifest.json -Algorithm SHA256
-ssh -i C:\Users\22338\.ssh\win1.pem ubuntu@42.193.20.17 "sha256sum /home/ubuntu/dsh-migration/transfer/package/manifest.json /home/ubuntu/dsh-migration/transfer/package/receipt.json"
+# 注意：路线 B 不执行 release，包内只有 manifest.json（不含 receipt.json）
+ssh -i C:\Users\22338\.ssh\win1.pem ubuntu@42.193.20.17 "sha256sum /home/ubuntu/dsh-migration/transfer/package/manifest.json"
 node cli.mjs migration abort <migrationId> --confirm
 node cli.mjs status                                   # 期望 active；migration.phase=active
 Stop-Transcript
@@ -62,25 +65,27 @@ Stop-Transcript
 ## 2. Linux 侧（`ssh -t`，2 次 TTY 挑战）
 
 ```bash
-ssh -t ubuntu@42.193.20.17
+ssh -i C:\Users\22338\.ssh\win1.pem -t ubuntu@42.193.20.17
 export NODE=/home/ubuntu/xiaofeiyu-acceptance-sx58lukl/node-v22.23.4-linux-x64/bin/node
 cd /home/ubuntu/xiaofeiyu
 mkdir -p /home/ubuntu/dsh-migration/evidence
 
-# 2.1 import（第 5 次挑战；data 目录必须为空/不存在）
+# 2.1 import（第 5 次挑战；data 目录必须为空/不存在；切勿加 | tee 管道，否则 stdout 非 TTY 会报 TRUST_UNAVAILABLE）
 $NODE cli.mjs migration import --from /home/ubuntu/dsh-migration/transfer/package \
-  --data-dir /home/ubuntu/dsh-bili/data --confirm 2>&1 | tee /home/ubuntu/dsh-migration/evidence/import.json
+  --data-dir /home/ubuntu/dsh-bili/data --confirm
 # 期望：{"phase":"imported","files":...,"snapshotHash":"...","dataDir":"/home/ubuntu/dsh-bili/data"}
+cp /home/ubuntu/dsh-bili/data/migration-receipt.json /home/ubuntu/dsh-migration/evidence/import-receipt.json
 
 # 2.2 放业务配置（validate 需要 config；本路线不复制 Cookie）
 install -m 600 /home/ubuntu/dsh-migration/config.json /home/ubuntu/dsh-bili/data/config.json
 
-# 2.3 validate（第 6 次挑战）
+# 2.3 validate（第 6 次挑战；同样直接运行，不要加 | tee 管道）
 $NODE cli.mjs migration validate <migrationId> \
-  --data-dir /home/ubuntu/dsh-bili/data 2>&1 | tee /home/ubuntu/dsh-migration/evidence/validate.json
+  --data-dir /home/ubuntu/dsh-bili/data
 # 期望：phase=validated、capabilities=["core:read","core:write"]；平台能力不入清单（blocked 通常为空，平台只读需路线 A 的 reauthorize）
 
-# 2.4 只读证据（不含 TTY）
+# 2.4 只读证据（不含 TTY 挑战，可用 tee/重定向保存）
+$NODE cli.mjs migration status --data-dir /home/ubuntu/dsh-bili/data | tee /home/ubuntu/dsh-migration/evidence/validate.json
 $NODE cli.mjs status --data-dir /home/ubuntu/dsh-bili/data | tee /home/ubuntu/dsh-migration/evidence/status.json
 $NODE -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('/home/ubuntu/dsh-bili/data/state.json'));const i=JSON.parse(fs.readFileSync('/home/ubuntu/dsh-bili/data/instance.json'));console.log(JSON.stringify({historyEpoch:s.historyEpoch,eventSeq:s.eventSeq,migration:s.migration,instanceStatus:i.status,previousInstanceId:i.previousInstanceId,capabilities:i.allowedCapabilities,approvalsAllInvalid:Object.values(s.approvals||{}).every(a=>a.usableForAuthorization===false&&a.invalidatedByMigration===true),unsettledHolds:Object.values(s.tasks||{}).filter(t=>!['succeeded','cancelled'].includes(t.status)).map(t=>({id:t.id,holds:(t.holds||[]).map(h=>h.kind)})),pendingOutbox:Object.values(s.outbox||{}).filter(o=>['pending','sending'].includes(o.status)),backups:s.backups,journalPending:s.journalPending},null,2))" \
   | tee /home/ubuntu/dsh-migration/evidence/target-summary.json
@@ -90,7 +95,7 @@ $NODE -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('/home/ubunt
 
 ```powershell
 # Windows 侧（DSH 可先不打开）
-scp -r ubuntu@42.193.20.17:/home/ubuntu/dsh-migration/evidence D:\dsh-migration-20261112\
+scp -i C:\Users\22338\.ssh\win1.pem -r ubuntu@42.193.20.17:/home/ubuntu/dsh-migration/evidence D:\dsh-migration-20261112\
 # 核对后清理目标临时账本/配置（保留 evidence 与 sha256 记录）
 ssh -i C:\Users\22338\.ssh\win1.pem ubuntu@42.193.20.17 "rm -rf /home/ubuntu/dsh-bili/data /home/ubuntu/dsh-migration/transfer/package /home/ubuntu/dsh-migration/config.json; ls /home/ubuntu/dsh-migration"
 ```
@@ -114,3 +119,15 @@ ssh -i C:\Users\22338\.ssh\win1.pem ubuntu@42.193.20.17 "rm -rf /home/ubuntu/dsh
 - 不 release、不 activate、不复制 Cookie、不做平台/IM 真实调用；
 - 不改写生产 dataDir、不启动第二实例、不删除任何生产文件；
 - 不把注入测试或合成数据算作真实跨 OS 验收；目标 activate/回迁仍属路线 A（需先定目标侧独立故障域）。
+
+## 6. 执行结果（2026-11-15，已执行）
+
+- 结果：**路线 B 部分验收通过**。`prepare`（seq193）→ `export`（seq194，`snapshotHash=035418d4…`，74 文件 / 390033 字节）→ `scp` → 目标 `import`（`instance_b80efb…`）→ `validate`（`capabilities=["core:read","core:write"]`，`blocked=[]`）→ `abort`（seq195，源端回 `active`，仅留 `lastAborted`）。
+- 证据：`D:\dsh-migration-20261112\evidence\`（12 文件）；结论、跨端核对、缺陷与偏差见 [T12_3_ROUTE_B_RESULT_2026-11-15.md](T12_3_ROUTE_B_RESULT_2026-11-15.md)。
+- 执行中修复：F13（CLI 必填 flag 崩溃）、F14（`export --out` 跨卷 `EXDEV`）、F15（import 结算字段致目标 `STORE_CORRUPTED`）。
+- 本次暴露的单页勘误（下次复用前修正）：
+  1. `<migrationId>` 是占位符，必须替换；PowerShell 会把 `<` 当重定向符；
+  2. `migration status --data-dir` 的 JSON 把本地账本放在 `source` 键（`target` 恒为 `null`）；
+  3. §3 清理命令里的 `/home/ubuntu/dsh-migration/config.json` 路径有误，实际在 `/home/ubuntu/dsh-bili/data/config.json`（随 `data` 删除）；
+  4. `Start-Transcript`（PS 5.1）不捕获 `node`/`scp` 输出，证据须逐命令 `Tee-Object`/`Out-File` 落盘；
+  5. 包在补证前已被删除时，`transfer-manifest.sha256` 无法产出，改用 `data/migration-package.json` 字节一致副本（见 `transfer-manifest.note.txt`）。

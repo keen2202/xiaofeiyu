@@ -2,8 +2,8 @@
 
 - 版本：**0.2.1-draft**
 - 状态：**核心已实现；2026-11-11 审计整改通过离线验证；真实交付尚有环境缺口，唯一现行状态见 §0**
-- 日期：2026-11-07（最近修订：2026-11-12）
-- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`；同日恢复 QQ 风控并完成 DSH 内 IM 真实入站/回信闭环（`msg:542765618` → outbox `externalId=873112629`），见 `report/DSH_IM_LIVE_2026-11-11.md`；同日完成 T12.1 approve 路径真实验收（IM 草稿 → TTY approve → 评论 `rpid=323665792720` → 3 条状态回信），并修复 Windows 跨进程 `state.json` rename 竞态（`renameWithRetry`），见 `report/T12_1_IM_APPROVE_2026-11-11.md`。2026-11-12 记录授权入口/通知受众整改（`39d5065`，check 112 文件、全量 417 项 415 通过 0 失败），并在 T12.3 执行前复核中发现并修复 F11（全新目标在 imported/validated 阶段可由本地 owner 创建首个恢复点，真实 BackupService 回归），更新 T12.3 决策与执行卡 `report/T12_3_EXEC_CARD_2026-11-12.md`；以上证据不改变 GATE-0/GATE-MEM，也不代表全部真实环境验收完成。
+- 日期：2026-11-07（最近修订：2026-11-15）
+- 修订记录：2026-11-05 按 `report/REVIEW_REPORT.md` 同步任务依赖、验收映射和共享文件编辑边界；2026-11-06 按二次复核修正引用、RPO措辞和旧编号；2026-11-07 建立 git 版本控制并推送 GitHub 远程，更新版本控制与提交步骤表述；2026-11-11 记录优先级 1–6 整改（F01–F10 修复、当前树 406 项/覆盖率复测、Linux Node 24/22 各 406 项、真实媒体、双向跨 OS 合成迁移、跨机 full 只读恢复），并提交 `d1a6e1c`（证据）与 `6ae973a`（修复）；同日另完成远程独立故障域 `protected` 账本点（`backup_8e99f036090b41008ac33566d00f4a57`）与单条真实评论（`task_ac3a25534fb34d5e9bbaaf8fc8315d84` / `op_5f916581484f4550a3d6bd9c1baf645a`，平台回读 rpid `323659699648`），见 `report/P3_REAL_ACCEPTANCE_2026-11-11.md`；同日恢复 QQ 风控并完成 DSH 内 IM 真实入站/回信闭环（`msg:542765618` → outbox `externalId=873112629`），见 `report/DSH_IM_LIVE_2026-11-11.md`；同日完成 T12.1 approve 路径真实验收（IM 草稿 → TTY approve → 评论 `rpid=323665792720` → 3 条状态回信），并修复 Windows 跨进程 `state.json` rename 竞态（`renameWithRetry`），见 `report/T12_1_IM_APPROVE_2026-11-11.md`。2026-11-12 记录授权入口/通知受众整改（`39d5065`，check 112 文件、全量 417 项 415 通过 0 失败），并在 T12.3 执行前复核中发现并修复 F11（全新目标在 imported/validated 阶段可由本地 owner 创建首个恢复点，真实 BackupService 回归），更新 T12.3 决策与执行卡 `report/T12_3_EXEC_CARD_2026-11-12.md`；以上证据不改变 GATE-0/GATE-MEM，也不代表全部真实环境验收完成。2026-11-15 owner 按单页执行 **T12.3 路线 B**：真实生产账本完成 `prepare → export → 跨机传输 → 目标 import → validate → abort`，两端 `snapshotHash` 一致（`jcs-sha256-v1:035418d4…`，74 文件 / 390033 字节，manifest SHA256 `70E50B18…`），目标能力仅 `core:read/core:write`、3 个 `failed` 任务带 migration hold、`pendingOutbox=[]`，源端回 `active` 仅留 `lastAborted`（`migration_cbe993e12ea9418da9f0740ed2e27489`）并在窗口后新建保护点 `backup_bf2a3807937346fba9b68e6fa6003abf`；执行中修复 F13（CLI 必填 flag 崩溃）、F14（`export --out` 跨卷 `EXDEV`）、F15（import 结算字段导致目标 `STORE_CORRUPTED`），证据见 `report/T12_3_ROUTE_B_RESULT_2026-11-15.md` 与 `D:\dsh-migration-20261112\evidence\`；目标 `activate`/回迁/平台重授权未执行，T12.3 仍为**部分验收**。
 - 收尾复核（2026-11-12）：归档含最终授权加固的 Linux 双版本日志；区分其与后续原子写修复的代码范围；当前 `3457f28` Windows 408 项 / 405 通过 / 0 失败 / 3 环境跳过，语法 112 文件通过；按后续验收记录同步当前缺口。
 - 后续整改（2026-11-12）：补齐命令当前权限、IM 待重验、通知受众及仅 IM 迁移重验路径；`3457f28` 加本轮改动共 417 项 / 414 通过 / 0 失败 / 3 环境跳过，语法 112 文件通过，详见 [授权整改报告](report/AUTHORITY_FOLLOWUP_2026-11-12.md)。
 - 项目根目录：`D:/Workespace/xiaofeiyu`
@@ -13,7 +13,7 @@
 - 当前规范范围：一个轻核心＋可选平台/IM/执行适配器＋ArtifactStore；独立真实视频生产；同插件兼容 schema 停机迁移；分层可信备份、只读灾备及证据驱动的分 scope 解冻。保留上一版42条新增需求，本次加10条，共52条逐项映射；不是微服务、旧插件导入、远程 worker 或自动接管。
 - 用户另已选择“事实＋偏好＋经验”的记忆范围；§9为本轮新增的待审核规划，不等于完整对话留存授权、记忆实现完成或已修改DESIGN/SPEC。记忆机制经GATE-MEM审核并回写主规范后才进入实现，不擅自升级账本v3或扩大原52条FR基线。
 
-## 0. 唯一现行实施与验收状态（2026-11-12）
+## 0. 唯一现行实施与验收状态（2026-11-15）
 
 本节取代下文计划标签和 §10 历史实施状态。修复基线为 `0cfb4ae` + 本轮工作区改动，工作区已于 2026-11-11 提交为 `d1a6e1c`（审计/验收证据）与 `6ae973a`（F01–F10 修复及契约/文档同步）；完整变更和复核证据见 [本轮整改报告](report/PRIORITY_FIXES_2026-11-11.md)。历史审计保留作为修复前证据，不重写探针结果。离线通过与真实验收分开计算，不宣称全部交付。
 
@@ -29,7 +29,7 @@
 | T11/T19 | 静态检查、回归、轻量依赖检查已实现 | 完整交付仍依赖 T17.3/T22 等未完成真实验收 |
 | T12.1/T16 | IM 契约与桥接已实现；DSH 内 bridge 已启动；approve 路径已验 | 2026-11-11：DSH 运行时真实入站 `msg:542765618` → 只读命令 → outbox `externalId=873112629`；另经 IM 创建草稿 → `task resume` 重签审批 → TTY `approve --go` → 真实评论 `rpid=323665792720`（`op_b6f79d169db9490f80b719abf90a788f` confirmed）→ 三条状态回信（65359317 / 2036901350 / 128067712）。CLI 假失败 `EPERM rename` 已修复（rename 重试）。QQ 恢复需 NapCat 脱离 DSH 进程树启动 |
 | T12.2 | DM 单动作 + 评论两次真实写入 | DM 1 条；评论 2 条真实写入（`task_ac3a…`/`op_5f91…`/rpid 323659699648；`task_5d7b…`/`op_b6f7…`/rpid 323665792720，第二条经 IM approve，均平台回读）；Manual/External 仍未实测；独立保护点 backup_8e99… / backup_d70d… |
-| T12.3 | 跨系统迁移实现已有；路线 B 已批准并预置，待 owner 执行；X1/COS 目的地已确认 | 合成数据双向交接/重启通过；owner 确认 4 项决策并选定**路线 B 部分验收**（真实账本跨 OS 导出/导入/验证，不改生产状态），执行单页 `report/T12_3_ROUTE_B_RUNBOOK_2026-11-12.md` 已预置（代码/Node/配置已就位，两端 key 文件 sha256 一致）；F11/F12 已修复回归；owner 已确认路线 A 目标侧独立目的地 **X1**：COS 独立前缀 `/cos-backup/dsh-bili-backups`，连通/读写/改名/原子替换与真实 BackupService 集成探针均通过（费用估算约 ¥1–1.5/月，见 `report/COS_BUCKET_PROBE_2026-11-12.md`），目标 policy 模板已备。真实账本迁移未执行 |
+| T12.3 | 跨系统迁移实现已有；**路线 B 已于 2026-11-15 执行**；X1/COS 目的地已确认 | 合成数据双向交接/重启通过；**真实生产账本路线 B 部分验收通过**：`prepare→export→传输→目标 import→validate→abort` 完成，两端 snapshotHash `035418d4…`（74 文件 / 390033 字节，manifest `70E50B18…`），目标 `capabilities=["core:read","core:write"]`、`blocked=[]`、3 个 failed 任务带 migration hold，源端回 active 仅留 lastAborted 并在窗口后补点 `backup_bf2a3807…`，详见 `report/T12_3_ROUTE_B_RESULT_2026-11-15.md`；执行中修复 F13/F14/F15（CLI 必填 flag、跨卷 export、import 结算字段）。目标 `activate`/回迁/平台重授权未执行；路线 A 目标侧独立目的地 **X1**（COS 独立前缀 `/cos-backup/dsh-bili-backups`）探针通过、policy 模板已备（`report/COS_BUCKET_PROBE_2026-11-12.md`） |
 | T13 | 有限范围交付报告已更新 | 不等同全功能签署 |
 | T15 | Artifact 已实现 | Linux 406 项零跳过，软/硬链接防护执行通过；Windows 系统权限不变 |
 | T17.1/T17.2 | 本地固定阶段执行与验证已实现 | 离线回归通过 |
@@ -542,7 +542,9 @@ T06 另依赖 T04；T07 不依赖 Agent。T14 承担通用 Operation/预算与�
 
 #### T12.3：真实 Windows/Linux 停机搬迁（环境条件项）【验收要求；现状见 §0】
 
-**方案状态（2026-11-12，owner 选定路线 B；执行单页已预置）**：owner 已确认——目标标签按日期（本次用 `instance_linux_target_20261112`）、验收后必须回迁 Windows、允许把 B 站 Cookie 复制到 Linux 做只读 `account verify`/`platform:bilibili` 重授权、时间窗与本人两侧真实 TTY 操作可行；并选定**路线 B（真实账本跨 OS 导出/导入/验证，不改生产状态）**。预置（2026-11-12 22:58）：目标 Linux 已装/复用 Node v22.23.4、代码解压至 `/home/ubuntu/xiaofeiyu` 且与 Windows HEAD 关键文件 sha256 一致、config 已传（600）、Windows 暂存 `D:\dsh-migration-20261112\`；剩余 30–45 分钟、6 次 TTY 挑战，操作单页见 `report/T12_3_ROUTE_B_RUNBOOK_2026-11-12.md`，执行卡见 `report/T12_3_EXEC_CARD_2026-11-12.md`。复核发现并修复：F11（目标首次激活恢复点，见 §10.3 第15条）与 F12（CLI import 无 runtime 崩溃）；完整路线 A（目标 activate + 回迁）的 **X1 已由 owner 确认**：COS 独立前缀 `/cos-backup/dsh-bili-backups`，连通/读写/改名/原子替换与真实 BackupService 集成探针均通过、费用估算约 ¥1–1.5/月（见 `report/COS_BUCKET_PROBE_2026-11-12.md`），目标 policy 模板见 `report/backup-policy.cos-target.template.json`；X2/X3 不再需要。**真实账本迁移未执行。**
+**方案状态（2026-11-12，owner 选定路线 B；执行单页已预置）**：owner 已确认——目标标签按日期（本次用 `instance_linux_target_20261112`）、验收后必须回迁 Windows、允许把 B 站 Cookie 复制到 Linux 做只读 `account verify`/`platform:bilibili` 重授权、时间窗与本人两侧真实 TTY 操作可行；并选定**路线 B（真实账本跨 OS 导出/导入/验证，不改生产状态）**。预置（2026-11-12 22:58）：目标 Linux 已装/复用 Node v22.23.4、代码解压至 `/home/ubuntu/xiaofeiyu` 且与 Windows HEAD 关键文件 sha256 一致、config 已传（600）、Windows 暂存 `D:\dsh-migration-20261112\`；剩余 30–45 分钟、6 次 TTY 挑战，操作单页见 `report/T12_3_ROUTE_B_RUNBOOK_2026-11-12.md`，执行卡见 `report/T12_3_EXEC_CARD_2026-11-12.md`。复核发现并修复：F11（目标首次激活恢复点，见 §10.3 第15条）与 F12（CLI import 无 runtime 崩溃）；完整路线 A（目标 activate + 回迁）的 **X1 已由 owner 确认**：COS 独立前缀 `/cos-backup/dsh-bili-backups`，连通/读写/改名/原子替换与真实 BackupService 集成探针均通过、费用估算约 ¥1–1.5/月（见 `report/COS_BUCKET_PROBE_2026-11-12.md`），目标 policy 模板见 `report/backup-policy.cos-target.template.json`；X2/X3 不再需要。
+
+**执行结果（2026-11-15，路线 B）**：owner 按 `report/T12_3_ROUTE_B_RUNBOOK_2026-11-12.md` 完成真实生产账本跨 OS 交接：源端 `prepare`（journal seq193，保护点 `backup_42acfa…`）→ `export --out`（seq194，`phase=sealed`，`snapshotHash=jcs-sha256-v1:035418d4…`，74 文件 / 390033 字节）→ `scp` 到目标 → 目标 `import`（`instance_b80efb6231c847bbb1a801ff4ed95f1e`，`phase=imported`）→ `validate`（`phase=validated`，`capabilities=["core:read","core:write"]`，`blocked=[]`）→ 源端 `abort`（seq195，回 `active`，仅留 `lastAborted=migration_cbe993…`）。目标账本：3 个 `failed` 任务各带 `migration` hold（`isSettled=false`、`finishedAt=null`）、7 条审批失效、`pendingOutbox=[]`、`backups={}`、`journalPending=2`（目标自产 `config.revision.updated`/`identity.credential.mismatch`）。证据：`D:\dsh-migration-20261112\evidence\`（12 文件，含 journal 事件与段哈希链、manifest 元数据、两端 manifest SHA256 `70E50B18…`、73/73 journal 段字节复核）；结论、偏差与单页勘误见 `report/T12_3_ROUTE_B_RESULT_2026-11-15.md`。执行中修复 F13（CLI 必填 flag 崩溃）、F14（`export --out` 跨卷 `EXDEV`）、F15（import 结算字段致目标 `STORE_CORRUPTED`），回归见 `test/fix-entry.test.js` 与 `test/migration.test.js`。**未执行**：目标 `activate`、回迁 `disable-target/rollback`、Cookie 复制与平台重授权；故 T12.3 与 T18 仍为部分验收。窗口后已补新保护点 `backup_bf2a3807937346fba9b68e6fa6003abf`（verified，`cutAt=11:51:43.749Z`）。
 
 **依赖**：T11、T18；另需两系统、受控测试目录和本地人类交接条件。
 
@@ -809,7 +811,7 @@ T12 的三个分项不纳入自动命令；只读宿主探测不发送试探消�
 | 真实 IM 消息/回信未授权 | T12.1 | 单独批准测试会话/范围；未授权不发送、不称已完成 |
 | 受信 ffmpeg/ffprobe、目录及执行授权未提供 | T17.3、生产完成门槛/T11 | 用户显式配置并实际生成验证 MP4/封面；仅该生产能力不可用，非真实 B 站授权事项 |
 | B 站账号/动作授权与 External 接口未验证 | T12.2 | 只读先行、逐动作最低额度授权；未实测不能说平台写已验证 |
-| 真实跨 OS 迁移未执行 | T12.3 | 环境已具备；owner 已确认 4 项决策；执行卡见 `report/T12_3_EXEC_CARD_2026-11-12.md`。前置：F11 修复已提交；目标 Linux 侧仍需与目标不同故障域的独立备份目的地（现有远程介质与目标同机），否则只做部分验收 |
+| 真实跨 OS 迁移的目标 activate/回迁未执行 | T12.3 | 路线 B 部分验收已通过（2026-11-15：真实账本 export/import/validate，两端摘要一致，见 `report/T12_3_ROUTE_B_RESULT_2026-11-15.md`）；完整路线 A 还需目标侧独立故障域 policy + 首点（X1 COS 已确认）、`activate`、回迁 `disable-target/rollback` 与平台重授权 |
 | owner 未确认独立故障域目的地与介质 | T20 保护门禁、T12.1/T12.2 前置、T12.3、T13 | 离线备份与注入演练仍可实施；缺未超龄有效点时受保护派发保持 fail-closed，同盘多份不称独立故障域 |
 | 真实介质损坏/异地恢复环境不可得 | T22 真实项、T13 | 隔离临时目录故障注入必做；RPO/RTO 只报实测值，物理损坏与跨 OS 恢复标未实测 |
 | GATE-MEM 记忆规划未审核 | §9 全部 | 批准前不写入 DESIGN/SPEC、不实施、不扩 FR 基线、不升级账本 schema |
@@ -996,6 +998,9 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 13. **恢复与迁移失败清理（A 组已补齐主要路径）**：恢复失败会删除带归属 marker 的未完成目标并可重试；迁移 import 失败仍清理新目标；反向 rollback 先写 prepared 决定，重试复用同一 reverseMigrationId/目的地并识别已激活反向实例，不会二次激活；import/validate/activate 失败会保留反向包和目标目录供审计，不自动删除已写入的目标账本。真正的跨机器/跨 OS 测试仍待环境。
 14. **调度器授权边界**：`scheduleEnabled` 是 owner 写入 `<dataDir>/backup-policy.json` 的显式授权；调度器只创建本地恢复点，不执行 prune、不提升权限、不写普通 `config.example.json`。未提供真实目的地前应保持默认关闭。
 15. **F11（2026-11-12 真实跨 OS 执行前复核发现并修复）**：原实现中 activate 要求目标侧健康恢复点，但 `backup create` 在 `migration.phase != active` 时一律拒绝，全新目标从导入到激活之间无法建立首个恢复点，导致真实首迁目标无法激活（离线测试用注入保护 fixture 掩盖）。修复：仅当导入目标处于 imported/validated、本机 instance 为 paused/validated 且 migrationId/previousInstanceId 匹配时，允许本地 owner 通过受信 CLI 创建首个恢复点；源端 quiescing/sealed/released 仍拒绝；import 保留空 `backups` 索引占位。同轮发现并修复 **F12**：CLI `migration import` 独立入口未传 configService，`_config()` 抛 `TypeError` 导致目标 import 不可用；现回退到文档默认包体上限并新增 CLI import 回归。回归：`test/migration.test.js` 新增 target bootstrap（真实 BackupService + 真实 activation，无注入）、边界用例与 CLI import 用例。该修复不打通 T12.3 的第二个阻塞：目标 Linux 主机仍需与自身不同故障域的独立目的地。
+16. **F13（2026-11-15 路线 B 执行中发现并修复）**：CLI 迁移子命令在分派前无条件构造所有 payload，`path.resolve(flags['data-dir'])` / `flags.from` 为 `undefined` 时抛 `TypeError`，被顶层兜底成 `DEPENDENCY_UNAVAILABLE`，导致 `migration prepare/export/release/abort/disable-target/rollback` 全部不可用（`prepare` 首次真实执行即暴露）。修复：按子命令按需解析 flag，缺必填项抛 `CONFIG_INVALID` 用法错误；同类加固独立 `migration import`、`recovery restore`、`artifact import`、`recovery authorize --scope`。回归：`test/fix-entry.test.js` 新增“无 `--data-dir` 的 prepare”与“必填 flag 用法错误”两例。
+17. **F14（同日修复）**：`migration export --out` 把暂存目录建在数据目录所在卷，最终 `rename` 到另一盘符报 `EXDEV`（本次 C: 数据目录 → D: 输出目录），包写完后才失败。修复：指定 `--out` 时暂存目录建在输出目录旁（同卷），默认路径不变。回归：`test/migration.test.js` 新增“export --out stages beside the target”用例。
+18. **F15（同日修复）**：`_importPackage` 给非终态任务加 migration hold 时只置 `isSettled=false`，已结算的 `failed` 任务仍保留 `finishedAt`，违反账本不变量（`failed/partial` 未结算必须 `finishedAt=null`）；`state.json` 直写导致 import 成功、下一次加载才 `STORE_CORRUPTED`。修复：同时清空 `finishedAt`（与 `TaskManager` 重算语义一致），并在复制文件前执行 `validateState`/`validateInstance` 使非法账本当场失败。回归：`test/migration.test.js` 新增“已结算 failed 任务导入后目标账本可加载”用例。
 
 ### 10.4 任务覆盖核对（逐项）
 
@@ -1003,7 +1008,7 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 - **T02～T10、T14～T18、T20～T22 的离线代码项**：均已有实现与测试证据（见 10.1）；A 组增补了备份调度、反向回滚、恢复证据修复/断点续办、评论与 DM resume、恢复清理与父链日记。T18/T20/T21/T22 的完整验收仍受 10.3 的外部/故障域限制。
 - **T06/T07/T10 的 resume**：评论 resume 重签审批并由 CLI 在批准后发送；DM resume 复用原 Task；`task.resume` 在 CommandService/CLI 按 kind 分派，生产 Task 路径不变。
 - **T11**：`npm run check`、`npm test`、`npm run test:coverage` 已全量通过；A 组范围已执行独立只读审查并修复审查发现（见 §10.5）。全量 T11 的正式人工审查/签署仍未完成，因此不标记为完整 DONE。
-- **T12.1/T12.2/T12.3**：真实 IM、真实 B 站/External、真实跨 OS 均无授权或环境，保持 **BLOCKED/未实测**；离线 Mock 不替代。（2026-11-10 后续：T12.1 入站→人工拒绝→回信已有真实证据；approve 路径仍未验。当前见 §0。）
+- **T12.1/T12.2/T12.3**：真实 IM、真实 B 站/External、真实跨 OS 均无授权或环境，保持 **BLOCKED/未实测**；离线 Mock 不替代。（2026-11-10 后续：T12.1 入站→人工拒绝→回信已有真实证据；approve 路径仍未验。2026-11-15 后续：T12.3 路线 B 的真实账本跨 OS `export/import/validate` 已通过，目标 `activate`/回迁仍未执行。当前见 §0。）
 - **T13**：本节即本轮分项交付记录；外部项按 10.3 单列，不宣称全功能交付。
 - **T16.2**：真实 dsh-im 宿主能力探测未获得可核验宿主证据，保持 **BLOCKED**；T16.1 契约完成不等于真实 IM 完成。（2026-11-10 后续：NapCat/OneBot 真实只读探测与真实收发/回信已验证，DSH 内组合受 QQ 风控阻塞；当前见 §0 与 T16.2。）
 - **T17.3**：Linux 真实 ffmpeg/ffprobe 离线验收通过（Windows 本机未安装媒体工具），测试使用注入的测试 human verifier；生产人类证明机制仍需环境验证。
@@ -1047,4 +1052,4 @@ GATE-MEM（§9 记忆范围、更新与遗忘机制）：批准 / 不批准 / �
 
 **验证**：`npm run check` 98 文件通过；`npm test` 369 项、367 通过、0 失败、2 skip；新增 `test/fix-core|fix-gateway|fix-modules|fix-prodmig|fix-entry.test.js` 与 `test/helpers/mock-platforms.js`。
 
-**仍未完成/未实测（2026-11-12 更新）**：T12.2 Manual/External 真实投稿、T12.3 真实双系统迁移（4 项决策已确认，执行卡已出；前置 F11 已修复，目标侧独立目的地未定）、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、评论两条真实写入（含 IM approve → 真实评论 `rpid=323665792720`）、DSH 内 IM bridge 真实入站+状态回信（`msg:542765618` → `externalId=873112629`）；上述剩余项均为真实环境/授权门槛，离线测试通过不替代。
+**仍未完成/未实测（2026-11-15 更新）**：T12.2 Manual/External 真实投稿、T12.3 目标 `activate`/回迁与平台重授权（路线 B 真实账本跨 OS 导出/导入/验证已于 2026-11-15 通过，见 `report/T12_3_ROUTE_B_RESULT_2026-11-15.md`）、T22 持续 RPO/RTO/媒体 full/物理介质损坏演练、T17.3 生产 TTY 人类证明、Windows 符号链接 2 项 skip、T11 正式人工签署；`§9` 记忆规划待 GATE-MEM。2026-11-11 已通过：Linux 真实媒体、双向跨 OS 合成数据、跨机 full 只读恢复、远程独立故障域 protected 账本点、评论两条真实写入（含 IM approve → 真实评论 `rpid=323665792720`）、DSH 内 IM bridge 真实入站+状态回信（`msg:542765618` → `externalId=873112629`）；以上剩余项均为真实环境/授权门槛，离线测试通过不替代。

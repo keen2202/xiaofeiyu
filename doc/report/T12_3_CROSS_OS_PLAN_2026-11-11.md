@@ -1,6 +1,6 @@
 # T12.3 真实 Windows ↔ Linux 跨 OS 停机迁移方案（2026-11-11）
 
-> 状态：**owner 已确认 4 项决策（2026-11-12）；执行卡见 [T12_3_EXEC_CARD_2026-11-12.md](T12_3_EXEC_CARD_2026-11-12.md)**。执行前复核修复了 F11（目标首次激活恢复点）与 F12（CLI import 无 runtime 崩溃）；目标 Linux 侧独立备份目的地仍未定，完整验收暂不开工，路线 B 部分验收可执行。本文保留 2026-11-11 方案正文，命令差异以执行卡为准。
+> 状态：**owner 已确认 4 项决策（2026-11-12）；执行卡见 [T12_3_EXEC_CARD_2026-11-12.md](T12_3_EXEC_CARD_2026-11-12.md)**。执行前复核修复了 F11（目标首次激活恢复点）与 F12（CLI import 无 runtime 崩溃）；目标 Linux 侧独立目的地已定为 X1（COS 独立前缀，探针通过）。**路线 B 已于 2026-11-15 执行并通过部分验收**（真实生产账本 export/import/validate，两端摘要一致，执行中修复 F13–F15），结果见 [T12_3_ROUTE_B_RESULT_2026-11-15.md](T12_3_ROUTE_B_RESULT_2026-11-15.md)；完整路线 A（目标 activate + 回迁）待排时间窗。本文保留 2026-11-11 方案正文，命令差异以执行卡为准。
 > 目标环境：本机 Windows（生产数据）↔ 用户提供的腾讯云 Linux `42.193.20.17`（Ubuntu 24.04，sudo 可用）。
 
 ## 0. 结论摘要（给决策者）
@@ -258,7 +258,7 @@ node cli.mjs migration rollback <migrationId> `
 4. **时间窗与操作人**：确认可行；本人两侧真实 TTY 执行，DSH 关闭、无外部写。
 5. **目标侧独立目的地（G5）**：确认选 **X1**——腾讯云 COS 桶 `claw-cos-data-1407061106` 的独立前缀 `/cos-backup/dsh-bili-backups`（桶内 `/claw2/dsh-bili-backups`）。2026-11-12 已实测连通/读写/改名/原子替换与真实 BackupService 集成探针（见 [COS_BUCKET_PROBE_2026-11-12.md](COS_BUCKET_PROBE_2026-11-12.md)），费用估算长期约 ¥1–1.5/月；目标 policy 模板见 [backup-policy.cos-target.template.json](backup-policy.cos-target.template.json)。
 
-**已解决/剩余**：F11/F12 修复已提交回归（`ea13ec8` 基线）；X1 已确认；剩余仅路线 B 执行与路线 A 时间窗。
+**已解决/剩余**：F11/F12 修复已提交回归（`ea13ec8` 基线）；X1 已确认；**路线 B 已于 2026-11-15 执行并通过部分验收**（见 [T12_3_ROUTE_B_RESULT_2026-11-15.md](T12_3_ROUTE_B_RESULT_2026-11-15.md)）；剩余仅路线 A 时间窗（目标 policy + 首点、activate、回迁、平台重授权）。
 
 ## 10. 明确不在本方案范围
 
