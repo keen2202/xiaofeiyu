@@ -533,6 +533,62 @@ test('crash before seal leaves the source quiescing and a retry can export', asy
   }
 });
 
+test('export --out stages beside the target so cross-volume out dirs avoid EXDEV', async () => {
+  const exists = (file) => fs.access(file).then(() => true, () => false);
+  const source = await setupSource();
+  const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-export-out-'));
+  const out = path.join(outRoot, 'package');
+  let stagedTemp = null;
+  try {
+    const prepared = await source.migration.prepare(
+      { targetInstanceId: 'target_out' },
+      source.harness.humanContext
+    );
+    const exporting = new MigrationService({
+      store: source.harness.store,
+      configService: source.harness.configService,
+      artifactStore: source.harness.artifactStore,
+      journal: source.harness.journal,
+      humanProof: source.harness.humanProof,
+      protection: source.harness.protectionProvider,
+      executorStatus: async () => ({ stopped: true }),
+      dataDir: source.harness.dir,
+      migrationsDir: source.harness.paths.migrationsDir,
+      journalDir: source.harness.paths.journalDir,
+      diaryDir: source.harness.paths.diaryDir,
+      postsDir: source.harness.paths.postsDir,
+      now: source.harness.now,
+      hooks: {
+        beforeSeal({ tempDir }) {
+          stagedTemp = tempDir;
+        }
+      }
+    });
+    await assert.rejects(
+      () => exporting.export(
+        { migrationId: prepared.migration.id, out: path.join(source.harness.dir, 'pkg-inside') },
+        source.harness.humanContext
+      ),
+      (error) => error.code === 'MIGRATION_BLOCKED' && /inside the active data directory/.test(error.message)
+    );
+    const exported = await exporting.export(
+      { migrationId: prepared.migration.id, out },
+      source.harness.humanContext
+    );
+    assert.equal(exported.phase, 'sealed');
+    assert.equal(exported.packageDir, path.resolve(out));
+    // The staging directory must sit on the target volume, not inside the data
+    // directory, so the final rename never crosses devices.
+    assert.equal(path.dirname(stagedTemp), path.dirname(path.resolve(out)));
+    assert.equal(path.relative(source.harness.dir, stagedTemp).startsWith('..'), true);
+    assert.equal(await exists(stagedTemp), false);
+    assert.ok(await exists(path.join(out, 'manifest.json')));
+  } finally {
+    await fs.rm(outRoot, { recursive: true, force: true });
+    await source.harness.cleanup();
+  }
+});
+
 test('disable-target requires a reachable target and rollback performs a reverse import/activate', async () => {
   const flow = await fullFlow();
   let rollbackDir = null;

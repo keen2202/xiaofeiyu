@@ -317,7 +317,6 @@ export class MigrationService {
     const refreshed = await this.store.getSnapshot();
     const config = this._config();
     const packageDir = await this._packageDir(migrationId);
-    const tempDir = `${packageDir}.tmp.${randomId('t')}`;
     const targetOut = out ? path.resolve(out) : packageDir;
     if (out) {
       if (!path.isAbsolute(out)) throw new AppError('CONFIG_INVALID', 'export out directory must be absolute');
@@ -329,6 +328,16 @@ export class MigrationService {
         if (existing.length > 0) throw new AppError('MIGRATION_BLOCKED', 'export output directory is not empty');
       }
     }
+    // Stage on the same volume as the final package. Renaming a directory
+    // across volumes fails with EXDEV (e.g. --out on D: while the data
+    // directory lives on C:), so staging inside the data directory would make
+    // every cross-drive export fail after the files were already written.
+    const tempDir = out
+      ? path.join(
+          path.dirname(targetOut),
+          `.${path.basename(targetOut) || 'package'}.tmp.${randomId('t')}`
+        )
+      : `${packageDir}.tmp.${randomId('t')}`;
     try {
       await ensureDir(tempDir);
       const files = [];
