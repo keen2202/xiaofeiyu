@@ -457,3 +457,82 @@ test('refreeze invalidates a prepared authorization instead of letting it commit
     await crash.setup.cleanup();
   }
 });
+
+test('a late receipt from the pre-recovery epoch is refused without replaying the task', async () => {
+  const setup = await setupBackup();
+  const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), 'xfy-late-receipt-'));
+  await fs.rm(targetDir, { recursive: true, force: true });
+  try {
+    await bindMockAccount(setup.harness);
+    const unknown = await makeUnknownOperation(setup.harness);
+    await setup.harness.journal.flush();
+    const sourceBefore = await setup.harness.snapshot();
+    const oldEpoch = sourceBefore.historyEpoch;
+    const oldEventsBefore = await setup.harness.journal.readEvents({
+      epoch: oldEpoch,
+      upToSeq: sourceBefore.eventSeq
+    });
+    const backup = await setup.backup.create({ kind: 'full', requestId: 'late-receipt-cut' }, setup.harness.humanContext);
+    const context = await restoreForTest(setup, backup.backupId, targetDir);
+    try {
+      const before = await context.store.getSnapshot();
+      assert.notEqual(before.historyEpoch, oldEpoch);
+      assert.equal(before.recovery.phase, 'readonly');
+      assert.equal(before.operations[unknown.operation.id].status, 'unknown');
+      const taskCount = Object.keys(before.tasks).length;
+      const outboxCount = Object.keys(before.outbox || {}).length;
+      const inspected = await context.recovery.inspect(before.recovery.id);
+      assert.equal(inspected.dispatchAllowed, false);
+      const receipt = makeReceipt({
+        platform: 'bilibili',
+        accountId: '1001',
+        action: 'comment',
+        externalId: 'late-receipt-1',
+        url: 'https://www.bilibili.com/x',
+        verification: 'platform_readback',
+        receivedAt: new Date().toISOString()
+      });
+      // The late receipt arrives for an operation created in the previous epoch.
+      // The restored epoch keeps an active hold, so the receipt cannot be
+      // applied as a fresh result; it must go through evidence review first.
+      await assert.rejects(
+        () => context.gateway.resolve(
+          {
+            operationId: unknown.operation.id,
+            decision: 'confirmed',
+            receipt,
+            note: 'late receipt from the previous epoch'
+          },
+          setup.harness.humanContext
+        ),
+        (error) => error.code === 'RECOVERY_GAP'
+      );
+      const after = await context.store.getSnapshot();
+      assert.equal(after.operations[unknown.operation.id].status, 'unknown');
+      assert.equal(after.operations[unknown.operation.id].resolvedAt, undefined);
+      // Nothing is replayed as a new task, operation or outbound notification.
+      assert.equal(Object.keys(after.tasks).length, taskCount);
+      assert.equal(Object.keys(after.outbox || {}).length, outboxCount);
+      assert.deepEqual(
+        Object.values(after.operations).filter((op) => op.id !== unknown.operation.id),
+        []
+      );
+      assert.equal(after.recovery.phase, 'readonly');
+      assert.equal((await context.store.getInstance()).status, 'recovery-readonly');
+      // Old epoch archives and cursor stay untouched; the rejected receipt did
+      // not advance the new epoch's event sequence either.
+      const oldEventsAfter = await setup.harness.journal.readEvents({
+        epoch: oldEpoch,
+        upToSeq: sourceBefore.eventSeq
+      });
+      assert.equal(oldEventsAfter.length, oldEventsBefore.length);
+      assert.equal((await setup.harness.snapshot()).historyEpoch, oldEpoch);
+      assert.equal(after.eventSeq, before.eventSeq);
+    } finally {
+      await context.store.close();
+    }
+  } finally {
+    await fs.rm(targetDir, { recursive: true, force: true });
+    await setup.harness.cleanup();
+  }
+});

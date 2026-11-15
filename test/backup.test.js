@@ -139,3 +139,47 @@ test('a failed copy never replaces the last verified recovery point or leaves a 
     await cleanup();
   }
 });
+
+test('ENOSPC during a point copy keeps the last verified point and leaves no partial backup', async () => {
+  const nodeFs = (await import('node:fs')).default;
+  const { harness, backup, destinationRoot, cleanup } = await setupBackup();
+  try {
+    await harness.store.transaction(async (draft, tx) => {
+      tx.appendEvent({ type: 'business.fact', payload: { ok: true } });
+    });
+    await harness.journal.flush();
+    const first = await backup.create({ kind: 'ledger', requestId: 'req-enospc-good' }, harness.humanContext);
+    const original = nodeFs.createWriteStream;
+    let injected = 0;
+    nodeFs.createWriteStream = () => {
+      injected += 1;
+      const error = new Error('ENOSPC: no space left on device, write');
+      error.code = 'ENOSPC';
+      throw error;
+    };
+    try {
+      await assert.rejects(
+        () => backup.create({ kind: 'ledger', requestId: 'req-enospc' }, harness.humanContext),
+        (error) => error.code === 'ENOSPC'
+      );
+    } finally {
+      nodeFs.createWriteStream = original;
+    }
+    assert.equal(injected > 0, true);
+    const state = await harness.store.getSnapshot();
+    assert.equal(state.checkpointFence, null);
+    assert.equal(state.backups[first.backupId].status, 'verified');
+    const protection = await backup.getProtection({ kind: 'workspace', workspaceId: state.workspaceId });
+    assert.equal(protection.status, 'protected');
+    assert.equal(protection.backupId, first.backupId);
+    const pointDirs = await fs.readdir(path.join(destinationRoot, 'backups'));
+    assert.deepEqual(pointDirs, [first.backupId]);
+    const tmpEntries = await fs.readdir(path.join(destinationRoot, '.tmp')).catch(() => []);
+    assert.deepEqual(tmpEntries, []);
+    const index = JSON.parse(await fs.readFile(path.join(destinationRoot, 'index.json'), 'utf8'));
+    assert.equal(index.lastError.code, 'ENOSPC');
+    assert.equal(Object.keys(index.backups).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
