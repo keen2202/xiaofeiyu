@@ -68,6 +68,13 @@ node cli.mjs migration release <migrationId> --confirm
 node cli.mjs migration status | Out-File -Encoding utf8 $E\migration-status-retired.json
 #   核对 package\receipt.json 的 migrationId/targetInstanceId/snapshotHash 与 export 一致
 #   注意：release 后不能再 abort；失败只能按 §5 处理
+
+# 1.6 补传 receipt.json（关键）
+#   receipt 是 release 时才写进包目录的，而 1.4 已经先传了包；import 只有在包里看到 receipt
+#   才会写 data/migration-receipt.json，而 activate 强制要求该文件存在。
+scp -i C:\Users\22338\.ssh\win1.pem "$MIG\package\receipt.json" ubuntu@42.193.20.17:/home/ubuntu/dsh-migration/transfer/package/receipt.json
+Get-FileHash "$MIG\package\receipt.json" -Algorithm SHA256 | Out-File -Encoding utf8 $E\receipt-windows.sha256
+ssh -i C:\Users\22338\.ssh\win1.pem ubuntu@42.193.20.17 "sha256sum /home/ubuntu/dsh-migration/transfer/package/receipt.json" | Out-File -Encoding utf8 $E\receipt-target.sha256
 ```
 
 ## 2. 目标端：import → 首个恢复点 → validate → activate（6 次挑战）
@@ -102,7 +109,9 @@ $NODE cli.mjs status --data-dir /home/ubuntu/dsh-bili/data | tee $E/status-activ
 
 # 2.4 只读平台重授权（account verify 免 TTY；reauthorize 挑战6）
 $NODE cli.mjs account verify --data-dir /home/ubuntu/dsh-bili/data | tee $E/account-verify.json
-script -q -c "$NODE cli.mjs migration reauthorize <migrationId> --capabilities core:read,core:write,platform:bilibili --data-dir /home/ubuntu/dsh-bili/data --confirm" $E/reauthorize.log
+# 只列“增量”能力：core:read/core:write 是 validate 给的基础能力，reauthorize 只接受
+# platform:bilibili / production:local / publish:manual / publish:external / im，传 core:* 会被拒。
+script -q -c "$NODE cli.mjs migration reauthorize <migrationId> --capabilities platform:bilibili --data-dir /home/ubuntu/dsh-bili/data --confirm" $E/reauthorize.log
 $NODE cli.mjs status --data-dir /home/ubuntu/dsh-bili/data | tee $E/status-reauthorized.json
 ```
 
